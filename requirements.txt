@@ -1,3 +1,5 @@
+anaconda-client==1.11.2
+anaconda-navigator==2.4.0
 appdirs==1.4.4
 asgiref==3.7.2
 atomicwrites==1.4.0
@@ -8,7 +10,11 @@ brotlipy==0.7.0
 certifi==2023.7.22
 charset-normalizer==3.2.0
 click==8.1.7
-clyent==1.2.1
+clyent==1.2.2
+conda==23.3.1
+conda-build==3.24.0
+conda-repo-cli==1.0.41
+conda-verify==3.4.2
 constantly==15.1.0
 contourpy==1.1.0
 cssselect==1.1.0
