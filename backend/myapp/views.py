@@ -96,10 +96,17 @@ def generate_spectrum_graph(request):
     graph_dir = 'static/graphs'  # "graphs"サブディレクトリも指定しています
     graph_filepath = os.path.join(graph_dir, graph_filename)
 
-    if not os.path.exists(graph_dir):
-        os.makedirs(graph_dir)
+    # PNGファイルとして保存
+    graph_dir_abs = os.path.join(settings.BASE_DIR, graph_dir)
+    graph_filepath_abs = os.path.join(settings.BASE_DIR, graph_filepath)
 
-    plt.savefig(graph_filepath)
-    plt.close()  # リソースの解放
+    if not os.path.exists(graph_dir_abs):
+        os.makedirs(graph_dir_abs)
 
-    return HttpResponse(f'static/{graph_filename}')
+    plt.savefig(graph_filepath_abs)
+    plt.close()
+
+    # 静的ファイルのURLを正しく構築
+    graph_url = reverse('django.views.static.serve',
+                        kwargs={'path': graph_filepath})
+    return HttpResponse(graph_url)
