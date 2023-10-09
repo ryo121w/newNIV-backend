@@ -17,7 +17,10 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path
 from . import views
+
+
 urlpatterns = [
     path("admin/", admin.site.urls),
     path('api/upload_excel/', views.upload_file, name='upload_file'),
+    path('api/latest_graph/', views.generate_spectrum_graph, name='latest-graph'),
 ]
