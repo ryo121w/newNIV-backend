@@ -1,2 +1,1 @@
-web: gunicorn backend.myapp.wsgi
-
+web: cd backend && gunicorn myapp.wsgi
