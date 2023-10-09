@@ -4,6 +4,8 @@ import uuid
 import openpyxl
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse, HttpResponse
+from django.conf import settings
+
 from rest_framework.views import APIView
 import pandas as pd
 import matplotlib.pyplot as plt
