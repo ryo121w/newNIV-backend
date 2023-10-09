@@ -102,4 +102,4 @@ def generate_spectrum_graph(request):
     plt.savefig(graph_filepath)
     plt.close()  # リソースの解放
 
-    return HttpResponse(f'/static/{graph_filename}')
+    return HttpResponse(f'static/{graph_filename}')
