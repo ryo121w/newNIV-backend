@@ -20,6 +20,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 env_path = os.path.join(BASE_DIR, '.env')
 config = Config(env_path)
 
+
 BACKEND_URL = config('BACKEND_URL', default='http://127.0.0.1:8000')
 
 
@@ -27,7 +28,7 @@ SECRET_KEY = "django-insecure-vd(t^_9hglyv=agpg0ckytg-&b1-u3)1zrpp8!nsq4khr#l$%n
 
 DEBUG = True
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = ['newniv-backend-cc535b80b8a2.herokuapp.com', ...]
 
 
 INSTALLED_APPS = [
@@ -123,6 +124,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'uploaded_files')
 
+AWS_DEFAULT_ACL = None
 # Amazon S3 configurations
 AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID', default='AKIASFIQQY5XBZP7LIWH')
 AWS_SECRET_ACCESS_KEY = config(
