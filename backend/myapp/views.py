@@ -7,6 +7,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse, HttpResponse
 from django.conf import settings
 from rest_framework.views import APIView
+import io
 from io import BytesIO
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -119,15 +120,15 @@ def generate_spectrum_graph(request):
     plt.ylabel('Absorbance')
     plt.legend()
 
-    # PNGファイルとして保存
-    graph_filename = 'nir_spectrum.png'
-    graph_dir = 'static/graphs'  # "graphs"サブディレクトリも指定しています
-    graph_filepath = os.path.join(graph_dir, graph_filename)
-
-    if not os.path.exists(graph_dir):
-        os.makedirs(graph_dir)
-
-    plt.savefig(graph_filepath)
+    # グラフをバイナリのIOストリームとして保存
+    img_data = io.BytesIO()
+    plt.savefig(img_data, format='png')
+    img_data.seek(0)  # ストリームの位置を先頭に戻す
     plt.close()  # リソースの解放
 
-    return HttpResponse(f'/static/{graph_filename}')
+    # S3にグラフのIOストリームをアップロード
+    graph_filename = 'graphs/nir_spectrum.png'
+    s3_client.upload_fileobj(img_data, bucket_name, graph_filename, ExtraArgs={
+                             'ContentType': "image/png"})
+
+    return HttpResponse(f'https://s3-{settings.AWS_S3_REGION_NAME}.amazonaws.com/{bucket_name}/{graph_filename}')

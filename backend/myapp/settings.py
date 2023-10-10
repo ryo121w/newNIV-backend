@@ -124,20 +124,20 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'uploaded_files')
 
-AWS_DEFAULT_ACL = None
 
 # Amazon S3 configurations
-AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID', default='AKIASFIQQY5XBZP7LIWH')
+AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID')
 AWS_SECRET_ACCESS_KEY = config(
-    'AWS_SECRET_ACCESS_KEY', default='7ZGayyiOQKK8x9Yua1hm1v4J7/wYCAOVOH31NcTK')
+    'AWS_SECRET_ACCESS_KEY')
 AWS_STORAGE_BUCKET_NAME = config(
-    'AWS_STORAGE_BUCKET_NAME', default='newniv-bucket')
+    'AWS_STORAGE_BUCKET_NAME')
 AWS_S3_CUSTOM_DOMAIN = '%s.s3.amazonaws.com' % AWS_STORAGE_BUCKET_NAME
 AWS_S3_OBJECT_PARAMETERS = {
     'CacheControl': 'max-age=86400',
 }
 AWS_LOCATION = 'static'
 AWS_DEFAULT_ACL = 'public-read'
+AWS_S3_REGION_NAME = ' ap-southeast-2'
 STATICFILES_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
 DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
 STATIC_URL = 'https://%s/%s/' % (AWS_S3_CUSTOM_DOMAIN, AWS_LOCATION)
