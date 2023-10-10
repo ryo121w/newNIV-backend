@@ -15,28 +15,20 @@ from decouple import Config, Csv
 from django.conf import settings
 
 
-config = Config(os.path.dirname(__file__))
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+env_path = os.path.join(BASE_DIR, '.env')
+config = Config(env_path)
 
 BACKEND_URL = config('BACKEND_URL', default='http://127.0.0.1:8000')
 
 
-# Build paths inside the project like this: BASE_DIR / 'subdir'.
-BASE_DIR = Path(__file__).resolve().parent.parent
-
-
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
-
-# SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = "django-insecure-vd(t^_9hglyv=agpg0ckytg-&b1-u3)1zrpp8!nsq4khr#l$%n"
 
-# SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['newniv-backend-cc535b80b8a2.herokuapp.com', ...]
+ALLOWED_HOSTS = ['*']
 
-
-# Application definition
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -46,6 +38,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     'corsheaders',
+    'storages',
 ]
 
 MIDDLEWARE = [
@@ -65,7 +58,6 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3001",
     "https://ryo121w.github.io"
 ]
-
 
 ROOT_URLCONF = "myapp.urls"
 
@@ -87,20 +79,12 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "myapp.wsgi.application"
 
-
-# Database
-# https://docs.djangoproject.com/en/4.2/ref/settings/#databases
-
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": BASE_DIR / "db.sqlite3",
     }
 }
-
-
-# Password validation
-# https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -117,10 +101,6 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-
-# Internationalization
-# https://docs.djangoproject.com/en/4.2/topics/i18n/
-
 LANGUAGE_CODE = "en-us"
 
 TIME_ZONE = "UTC"
@@ -129,27 +109,32 @@ USE_I18N = True
 
 USE_TZ = True
 
-
-# Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/4.2/howto/static-files/
-
 STATIC_URL = "/static/"
 
-STATICFILES_DIRS = [os.path.join(settings.BASE_DIR, 'static')]
+STATICFILES_DIRS = [os.path.join(BASE_DIR, 'static')]
+
 
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
-
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
-
-
-# Default primary key field type
-# https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-
-# settings.py
-
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'uploaded_files')
+
+# Amazon S3 configurations
+AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID', default='AKIASFIQQY5XBZP7LIWH')
+AWS_SECRET_ACCESS_KEY = config(
+    'AWS_SECRET_ACCESS_KEY', default='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')
+AWS_STORAGE_BUCKET_NAME = config(
+    'AWS_STORAGE_BUCKET_NAME', default='newniv-bucket')
+AWS_S3_CUSTOM_DOMAIN = '%s.s3.amazonaws.com' % AWS_STORAGE_BUCKET_NAME
+AWS_S3_OBJECT_PARAMETERS = {
+    'CacheControl': 'max-age=86400',
+}
+AWS_LOCATION = 'static'
+AWS_DEFAULT_ACL = 'public-read'
+STATICFILES_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+DEFAULT_FILE_STORAGE = 'storages.backends.s3boto3.S3Boto3Storage'
+STATIC_URL = 'https://%s/%s/' % (AWS_S3_CUSTOM_DOMAIN, AWS_LOCATION)
