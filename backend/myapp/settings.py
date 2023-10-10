@@ -124,7 +124,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'uploaded_files')
 
-AWS_DEFAULT_ACL = None
+
 # Amazon S3 configurations
 AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID', default='AKIASFIQQY5XBZP7LIWH')
 AWS_SECRET_ACCESS_KEY = config(
