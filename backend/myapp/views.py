@@ -13,6 +13,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import numpy as np
+import cloudinary
+import cloudinary.uploader
+import cloudinary.api
 
 
 def list_files(s3_client, bucket, prefix):
@@ -82,6 +85,13 @@ def upload_file(request):
 
 
 def generate_spectrum_graph(request):
+    # Cloudinaryの設定
+    cloudinary.config(
+        cloud_name=os.environ.get('CLOUDINARY_CLOUD_NAME'),
+        api_key=os.environ.get('CLOUDINARY_API_KEY'),
+        api_secret=os.environ.get('CLOUDINARY_API_SECRET')
+    )
+
     s3_client = boto3.client('s3', aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
                              aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
     bucket_name = settings.AWS_STORAGE_BUCKET_NAME
@@ -103,10 +113,7 @@ def generate_spectrum_graph(request):
     plt.xlim(6000, 8000)
     plt.ylim(0, 1.6)
 
-    # Concentrationsの部分が前のコードから不足していたので、以下の仮のコードを追加します
-    # もしrequestからconcentrationsを取得する必要がある場合、適切に修正してください
-    concentrations = None  # 仮のコード
-
+    concentrations = None
     concentrations_columns = concentrations if concentrations else list(
         df.columns[1:])
     colors = cm.rainbow(np.linspace(0, 0.5, len(concentrations_columns)))
@@ -123,12 +130,23 @@ def generate_spectrum_graph(request):
     # グラフをバイナリのIOストリームとして保存
     img_data = io.BytesIO()
     plt.savefig(img_data, format='png')
-    img_data.seek(0)  # ストリームの位置を先頭に戻す
-    plt.close()  # リソースの解放
+    img_data.seek(0)
+    plt.close()
 
-    # S3にグラフのIOストリームをアップロード
-    graph_filename = 'graphs/nir_spectrum.png'
-    s3_client.upload_fileobj(img_data, bucket_name, graph_filename, ExtraArgs={
-                             'ContentType': "image/png"})
+    # Cloudinaryに保存されている古いイメージを削除
+    folder_name = 'spectrums'
+    stored_images = cloudinary.api.resources(
+        type='upload', prefix=folder_name, max_results=500)
+    for image in stored_images['resources']:
+        cloudinary.uploader.destroy(image['public_id'])
 
-    return HttpResponse(f'https://s3-{settings.AWS_S3_REGION_NAME}.amazonaws.com/{bucket_name}/{graph_filename}')
+    # 新しいイメージをCloudinaryのフォルダにアップロード
+    upload_response = cloudinary.uploader.upload(
+        img_data,
+        folder=folder_name,
+        use_filename=True,
+        unique_filename=False
+    )
+    graph_url = upload_response['url']
+
+    return HttpResponse(graph_url)
