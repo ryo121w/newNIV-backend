@@ -28,5 +28,5 @@ urlpatterns = [
          name='get_files_from_s3'),
     path('api/concentration_graph/', ConcentrationGraphView.as_view(),
          name='concentration_graph'),
-    path('download_excel/', views.download_excel, name='download_excel'),
+    path('api/download_excel/', views.download_excel, name='download_excel'),
 ]
