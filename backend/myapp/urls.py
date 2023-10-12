@@ -17,10 +17,16 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path
 from . import views
+from .views import ConcentrationGraphView
 
 
 urlpatterns = [
     path("admin/", admin.site.urls),
     path('api/upload_excel/', views.upload_file, name='upload_file'),
     path('api/latest_graph/', views.generate_spectrum_graph, name='latest-graph'),
+    path('api/get_files_from_s3/', views.get_files_from_s3,
+         name='get_files_from_s3'),
+    path('api/concentration_graph/', ConcentrationGraphView.as_view(),
+         name='concentration_graph'),
+    path('download_excel/', views.download_excel, name='download_excel'),
 ]
