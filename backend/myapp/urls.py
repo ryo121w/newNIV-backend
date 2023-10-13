@@ -77,6 +77,6 @@ urlpatterns = [
 
 
 
-    path('api/pca_analysis/', PrincipalComponentAnalysisView.as_view(),
-         name='pca_analysis'),
+    path('pca/', PrincipalComponentAnalysisView.as_view(),
+         name='pca'),
 ]

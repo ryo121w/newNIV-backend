@@ -57,7 +57,7 @@ MIDDLEWARE = [
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
-    "https://ryo121w.github.io/newNIV-frontend/"
+    "https://ryo121w.github.io"
 ]
 
 ROOT_URLCONF = "myapp.urls"
