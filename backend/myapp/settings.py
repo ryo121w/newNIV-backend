@@ -28,7 +28,7 @@ SECRET_KEY = "django-insecure-vd(t^_9hglyv=agpg0ckytg-&b1-u3)1zrpp8!nsq4khr#l$%n
 
 DEBUG = True
 
-ALLOWED_HOSTS = ['newniv-backend-cc535b80b8a2.herokuapp.com', ...]
+ALLOWED_HOSTS = ['*']
 
 
 INSTALLED_APPS = [
@@ -56,7 +56,7 @@ MIDDLEWARE = [
 
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3001",
+    "http://localhost:3000",
     "https://ryo121w.github.io"
 ]
 
