@@ -21,7 +21,7 @@ env_path = os.path.join(BASE_DIR, '.env')
 config = Config(env_path)
 
 
-BACKEND_URL = config('BACKEND_URL', default='http://127.0.0.1:8000')
+BACKEND_URL = config('BACKEND_URL')
 
 
 SECRET_KEY = "django-insecure-vd(t^_9hglyv=agpg0ckytg-&b1-u3)1zrpp8!nsq4khr#l$%n"
