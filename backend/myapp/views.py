@@ -23,6 +23,7 @@ import cloudinary.uploader
 import cloudinary.api
 from scipy import ndimage
 from sklearn.decomposition import PCA
+import prince
 
 # Cloudinary設定
 cloudinary.config(
@@ -861,4 +862,57 @@ class PrincipalComponentAnalysisView(APIView):
             unique_filename=False
         )
 
+        return Response({"graph_url": upload_response['url']}, status=200)
+
+
+class MCAnalysis(APIView):
+    def post(self, request):
+        # S3からのデータ取得コード
+        s3_client = boto3.client('s3')
+        bucket_name = 'newniv-bucket'
+
+        files = list_files(s3_client, bucket_name, 'processed_data/')
+        if not files:
+            return Response({'error': 'No files found in S3 bucket.'}, status=404)
+
+        latest_file_key = files[-1]
+        local_path = "/tmp/latest_file.xlsx"
+        s3_client.download_file(bucket_name, latest_file_key, local_path)
+
+        df = pd.read_excel(local_path)
+
+        # MCAの実行
+        n_components = min(df.shape) - 1  # use min(rows, columns) - 1 for MCA
+        mca = prince.MCA(n_components=n_components)
+        mca_result = mca.fit(df)
+
+        # S3への処理後のデータアップロード
+        mca_result_df = pd.DataFrame(
+            data=mca_result.row_coordinates(df),
+            columns=[f'MC{i}' for i in range(1, n_components+1)]
+        )
+        mca_result_df.to_excel("/tmp/mca_result.xlsx", index=False)
+        s3_client.upload_file(
+            "/tmp/mca_result.xlsx", bucket_name, "Multiple_correspondence_analysis/mca_result.xlsx")
+
+        # Scree plot (explained variance by component)
+        ax = mca.plot_row_coordinates(
+            df, figsize=(10, 6), show_row_points=True, show_row_labels=False, show_column_points=True, show_column_labels=True)
+        ax.get_figure().savefig("/tmp/mca_scree_plot.png")
+
+        # Cloudinaryへの処理後のイメージアップロード
+        cloudinary.config(
+            cloud_name=os.environ.get('CLOUDINARY_CLOUD_NAME'),
+            api_key=os.environ.get('CLOUDINARY_API_KEY'),
+            api_secret=os.environ.get('CLOUDINARY_API_SECRET')
+        )
+
+        upload_response = cloudinary.uploader.upload(
+            "/tmp/mca_scree_plot.png",
+            folder="Multiple_correspondence_analysis",
+            use_filename=True,
+            unique_filename=False
+        )
+
+        # 最後にフロントにurlを返す
         return Response({"graph_url": upload_response['url']}, status=200)

@@ -17,7 +17,7 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path
 from . import views
-from .views import ConcentrationGraphView, SecondDerivativeGraphView, ThirdDerivativeGraphView, FourthDerivativeGraphView, DifferenceGraphView, PrincipalComponentAnalysisView
+from .views import ConcentrationGraphView, SecondDerivativeGraphView, ThirdDerivativeGraphView, FourthDerivativeGraphView, DifferenceGraphView, PrincipalComponentAnalysisView, MCAnalysis
 
 
 urlpatterns = [
@@ -79,4 +79,6 @@ urlpatterns = [
 
     path('pca/', PrincipalComponentAnalysisView.as_view(),
          name='pca'),
+
+    path('mca/', MCAnalysis.as_view(), name='mca_analysis'),
 ]
