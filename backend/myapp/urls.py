@@ -22,7 +22,7 @@ from .views import ConcentrationGraphView, SecondDerivativeGraphView, ThirdDeriv
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-    # Upload Excel File
+    # Upload Excel File(NIV)
     path('api/upload_excel/', views.upload_file, name='upload_file'),
 
     # NIRGraph
@@ -71,14 +71,21 @@ urlpatterns = [
     path('api/difference_graph/', DifferenceGraphView.as_view(),
          name='difference_graph'),
 
-
+    # Download Excel(Difference)
     path('api/difference_download/', views.difference_download,
          name='difference_download'),
 
 
-
+    # PCA
     path('pca/', PrincipalComponentAnalysisView.as_view(),
          name='pca'),
 
+    # MCA
     path('mca/', MCAnalysis.as_view(), name='mca_analysis'),
+
+
+
+
+    # FileUpload(FUV)
+    path('api/fuv_upload/', views.FUVUpload_file, name='fuv_upload'),
 ]

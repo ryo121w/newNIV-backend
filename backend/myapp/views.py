@@ -245,11 +245,15 @@ def download_excel(request):
         print(e)
         return HttpResponse("An error occurred while downloading the file.")
 
+# AWSのファイルをリストで取得
+
 
 def list_files(s3_client, bucket_name, prefix):
     # バケットから特定のプレフィックスを持つオブジェクトのリストを取得
     response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
     return [content['Key'] for content in response.get('Contents', [])]
+
+# モル吸光係数
 
 
 class ConcentrationGraphView(APIView):
@@ -417,6 +421,8 @@ class SecondDerivativeGraphView(APIView):
         response_data = {'graph_url': cloudinary_url}
         return JsonResponse(response_data)
 
+# 二次微分のエクセルデータダウンロード
+
 
 def second_derivative_download(request):
     s3_client = boto3.client('s3',
@@ -452,6 +458,8 @@ def second_derivative_download(request):
     except Exception as e:
         print(e)
         return HttpResponse("An error occurred while downloading the file.")
+
+# 三次微分
 
 
 class ThirdDerivativeGraphView(APIView):
@@ -535,6 +543,8 @@ class ThirdDerivativeGraphView(APIView):
         response_data = {'graph_url': cloudinary_url}
         return JsonResponse(response_data)
 
+# 三次微分のエクセルデータダウンロード
+
 
 def third_derivative_download(request):
     s3_client = boto3.client('s3',
@@ -570,6 +580,8 @@ def third_derivative_download(request):
     except Exception as e:
         print(e)
         return HttpResponse("An error occurred while downloading the file.")
+
+# 四次微分
 
 
 class FourthDerivativeGraphView(APIView):
@@ -653,6 +665,8 @@ class FourthDerivativeGraphView(APIView):
         response_data = {'graph_url': cloudinary_url}
         return JsonResponse(response_data)
 
+# 四次微分のエクセルデータダウンロード
+
 
 def fourth_derivative_download(request):
     s3_client = boto3.client('s3',
@@ -688,6 +702,8 @@ def fourth_derivative_download(request):
     except Exception as e:
         print(e)
         return HttpResponse("An error occurred while downloading the file.")
+
+# 差スペクトル
 
 
 class DifferenceGraphView(APIView):
@@ -771,6 +787,8 @@ class DifferenceGraphView(APIView):
         image_url = cloudinary_upload['secure_url']
         return JsonResponse({"graph_url": image_url})
 
+# 差スペクトルのデータをダウンロード
+
 
 def difference_download(request):
     s3_client = boto3.client('s3',
@@ -806,6 +824,8 @@ def difference_download(request):
     except Exception as e:
         print(e)
         return HttpResponse("An error occurred while downloading the file.")
+
+# PCA実行
 
 
 class PrincipalComponentAnalysisView(APIView):
@@ -845,7 +865,7 @@ class PrincipalComponentAnalysisView(APIView):
                                      f'PC{i}' for i in range(1, n_components+1)])
         pca_result_df.to_excel("/tmp/pca_result.xlsx", index=False)
         s3_client.upload_file("/tmp/pca_result.xlsx",
-                              bucket_name, "Principal_analysis/pca_result.xlsx")
+                              bucket_name, "principal_analysis/pca_result.xlsx")
 
         # Configure Cloudinary
         cloudinary.config(
@@ -857,12 +877,15 @@ class PrincipalComponentAnalysisView(APIView):
         # Upload image to Cloudinary
         upload_response = cloudinary.uploader.upload(
             "/tmp/pca_scree_plot.png",
-            folder="Principal_analysis",
+            folder="principal_analysis",
             use_filename=True,
             unique_filename=False
         )
 
         return Response({"graph_url": upload_response['url']}, status=200)
+
+
+# MCA実行
 
 
 class MCAnalysis(APIView):
@@ -916,3 +939,58 @@ class MCAnalysis(APIView):
 
         # 最後にフロントにurlを返す
         return Response({"graph_url": upload_response['url']}, status=200)
+
+
+# FUVのエクセルファイルアップロード
+
+
+@csrf_exempt
+def FUVUpload_file(request):
+    if request.method == 'POST':
+        try:
+            print("Access Key:", os.environ.get('AWS_ACCESS_KEY_ID'))
+            print("Secret Key:", os.environ.get('AWS_SECRET_ACCESS_KEY'))
+
+            data = json.loads(request.body.decode('utf-8'))
+
+            file_name = f"{uuid.uuid4()}.xlsx"
+
+            workbook = openpyxl.Workbook()
+            sheet = workbook.active
+            for index, row in enumerate(data):
+                for key, value in row.items():
+                    if index == 0:
+                        header_col = sheet.cell(
+                            row=1, column=list(row.keys()).index(key) + 1)
+                        header_col.value = key
+
+                    cell = sheet.cell(
+                        row=index + 2, column=list(row.keys()).index(key) + 1)
+                    cell.value = value
+
+            with open(file_name, 'wb') as f:
+                workbook.save(f)
+
+            s3_path = f"Fuv/upload/{file_name}"
+
+            s3_client = boto3.client('s3', aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+                                     aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
+
+            existing_files = list_files(
+                s3_client, settings.AWS_STORAGE_BUCKET_NAME, 'fuv/upload/')
+            for file_key in existing_files:
+                s3_client.delete_object(
+                    Bucket=settings.AWS_STORAGE_BUCKET_NAME, Key=file_key)
+
+            s3_client.upload_file(
+                file_name, settings.AWS_STORAGE_BUCKET_NAME, s3_path)
+
+            os.remove(file_name)
+
+            file_url = f"https://{settings.AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com/{s3_path}"
+
+            return JsonResponse({'message': 'Data processed and saved to S3 successfully!', 'file_url': file_url})
+        except json.JSONDecodeError:
+            return JsonResponse({'message': 'Failed to decode JSON data.'}, status=400)
+
+    return JsonResponse({'message': 'Only POST requests are allowed.'})
