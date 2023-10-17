@@ -24,6 +24,9 @@ import cloudinary.api
 from scipy import ndimage
 from sklearn.decomposition import PCA
 import prince
+from scipy.integrate import simps
+from scipy.signal import savgol_filter
+
 
 # Cloudinary設定
 cloudinary.config(
@@ -125,6 +128,7 @@ def generate_spectrum_graph(request):
     bucket_name = settings.AWS_STORAGE_BUCKET_NAME
 
     # S3内の'uploads/excel/'ディレクトリから最新のファイルを取得
+    # (list_files関数の定義がないため、この部分を具体的には確認できません。)
     files = list_files(s3_client, bucket_name, 'uploads/excel/')
     if not files:
         return HttpResponse('No files found in S3 bucket.')
@@ -139,12 +143,15 @@ def generate_spectrum_graph(request):
     # グラフ生成
     plt.figure(figsize=(10, 6))
     plt.xlim(6000, 8000)
-    plt.ylim(0, 1.6)
+
+    # 6000-8000の範囲での最大値を検知し、y軸の上限を設定
+    max_y_val_within_range = df[df.columns[1:]].max().max()
+    plt.ylim(0, max_y_val_within_range + 0.1)
 
     concentrations = None
     concentrations_columns = concentrations if concentrations else list(
         df.columns[1:])
-    colors = cm.rainbow(np.linspace(0, 0.5, len(concentrations_columns)))
+    colors = plt.cm.rainbow(np.linspace(0, 0.5, len(concentrations_columns)))
 
     for col_name, color in zip(concentrations_columns, colors):
         if col_name in df.columns:
@@ -179,9 +186,10 @@ def generate_spectrum_graph(request):
 
     return HttpResponse(graph_url)
 
-
 # モル吸光係数
 # モル濃度の情報を取得
+
+
 def get_molarities_from_excel(file_path):
     with tempfile.NamedTemporaryFile(delete=False) as temp_file:
         s3_client = boto3.client('s3', aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
@@ -264,6 +272,11 @@ class ConcentrationGraphView(APIView):
         concentrations = request.data.getlist('concentrations[]', [])
         print(f"Debug: Received concentrations: {concentrations}")
 
+        # S3 configuration
+        s3_client = boto3.client('s3', aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+                                 aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
+        bucket_name = os.environ.get('AWS_STORAGE_BUCKET_NAME')
+
         # S3内の'uploads/excel/'ディレクトリから最新のファイルを取得
         files = list_files(s3_client, bucket_name, 'uploads/excel/')
         if not files:
@@ -283,14 +296,24 @@ class ConcentrationGraphView(APIView):
 
         plt.figure(figsize=(10, 6))
         plt.xlim(8000, 6000)
-        plt.ylim(0, 0.03)
+
+        max_val = 0  # Initialize max_val to be updated for each processed column
 
         colors = cm.rainbow(np.linspace(0, 0.5, len(columns)))
 
         for i, (column, color) in enumerate(zip(columns, colors)):
-            df[column] = df[column] / float(concentrations[i])
-            plt.plot(df['波長'], df[column],
+            # Process/normalize the column data here
+            norm_column = df[column] / float(concentrations[i])
+
+            # Update max_val if new max found
+            current_max = norm_column[(df['波長'] >= 6000) & (
+                df['波長'] <= 8000)].max()
+            max_val = max(max_val, current_max)
+
+            plt.plot(df['波長'], norm_column,
                      label=f'{column} - {concentrations[i]}M', color=color)
+
+        plt.ylim(0, max_val + 0.01)  # Set y limit based on max_val
 
         plt.title('NIR Spectrum of LiCl with Concentrations')
         plt.xlabel('Wavelength (cm-1)')
@@ -305,6 +328,7 @@ class ConcentrationGraphView(APIView):
             os.makedirs(graph_dir)
 
         plt.savefig(graph_filepath)
+        plt.close()
 
         # Delete previous data in the processed_data folder
         delete_files_in_folder(s3_client, bucket_name, 'processed_data/')
@@ -362,7 +386,10 @@ class SecondDerivativeGraphView(APIView):
 
         plt.figure(figsize=(10, 6))
         plt.xlim(8000, 6000)
-        plt.ylim(-0.00015, 0.00017)
+
+        # Initialize variables to find max and min values dynamically
+        max_val, min_val = None, None
+
         colors = plt.cm.rainbow(np.linspace(0, 1, len(columns)))
 
         for col, c in zip(columns, colors):
@@ -371,10 +398,22 @@ class SecondDerivativeGraphView(APIView):
 
             smoothed_data = ndimage.gaussian_filter1d(df[col], sigma=10)
             y = ndimage.gaussian_filter1d(smoothed_data, sigma=10, order=2)
-            # Store the second derivative data in the copied dataframe
             derivative_df[col] = y
 
+            # Dynamically find max and min values in the specified range
+            current_max = y[(df['波長'] >= 6000) & (df['波長'] <= 8000)].max()
+            current_min = y[(df['波長'] >= 6000) & (df['波長'] <= 8000)].min()
+
+            # Update max and min values if new extremes found
+            max_val = current_max if max_val is None else max(
+                max_val, current_max)
+            min_val = current_min if min_val is None else min(
+                min_val, current_min)
+
             plt.plot(df['波長'], y, label=col, color=c)
+
+        # Set y limit based on dynamically found max and min values
+        plt.ylim(min_val, max_val)
 
         plt.title('Second Derivative of NIR Spectrum')
         plt.xlabel('Wavelength (cm-1)')
@@ -389,11 +428,11 @@ class SecondDerivativeGraphView(APIView):
             os.makedirs(graph_dir)
 
         plt.savefig(graph_filepath)
+        plt.close()
 
         # Save the second derivative data to S3
         processed_excel_path = os.path.join(
             graph_dir, 'second_derivative_data.xlsx')
-        # Use the derivative_df here
         derivative_df.to_excel(processed_excel_path, index=False)
         s3_upload_path = f'second_derivative/second_derivative_data.xlsx'
         s3_client.upload_file(processed_excel_path,
@@ -420,7 +459,6 @@ class SecondDerivativeGraphView(APIView):
 
         response_data = {'graph_url': cloudinary_url}
         return JsonResponse(response_data)
-
 # 二次微分のエクセルデータダウンロード
 
 
@@ -479,12 +517,15 @@ class ThirdDerivativeGraphView(APIView):
         df = pd.read_excel(local_path)
         columns = df.columns.drop('波長')
 
-        # Create a copy of the dataframe to store the second derivative data
+        # Create a copy of the dataframe to store the third derivative data
         derivative_df = df.copy()
 
         plt.figure(figsize=(10, 6))
         plt.xlim(8000, 6000)
-        plt.ylim(-0.00015, 0.00017)
+
+        # Initialize variables to find max and min values dynamically
+        max_val, min_val = None, None
+
         colors = plt.cm.rainbow(np.linspace(0, 1, len(columns)))
 
         for col, c in zip(columns, colors):
@@ -493,10 +534,22 @@ class ThirdDerivativeGraphView(APIView):
 
             smoothed_data = ndimage.gaussian_filter1d(df[col], sigma=10)
             y = ndimage.gaussian_filter1d(smoothed_data, sigma=10, order=3)
-            # Store the second derivative data in the copied dataframe
             derivative_df[col] = y
 
+            # Dynamically find max and min values in the specified range
+            current_max = y[(df['波長'] >= 6000) & (df['波長'] <= 8000)].max()
+            current_min = y[(df['波長'] >= 6000) & (df['波長'] <= 8000)].min()
+
+            # Update max and min values if new extremes found
+            max_val = current_max if max_val is None else max(
+                max_val, current_max)
+            min_val = current_min if min_val is None else min(
+                min_val, current_min)
+
             plt.plot(df['波長'], y, label=col, color=c)
+
+        # Set y limit based on dynamically found max and min values
+        plt.ylim(min_val, max_val)
 
         plt.title('Third Derivative of NIR Spectrum')
         plt.xlabel('Wavelength (cm-1)')
@@ -511,11 +564,11 @@ class ThirdDerivativeGraphView(APIView):
             os.makedirs(graph_dir)
 
         plt.savefig(graph_filepath)
+        plt.close()
 
-        # Save the second derivative data to S3
+        # Save the third derivative data to S3
         processed_excel_path = os.path.join(
             graph_dir, 'third_derivative_data.xlsx')
-        # Use the derivative_df here
         derivative_df.to_excel(processed_excel_path, index=False)
         s3_upload_path = f'third_derivative/third_derivative_data.xlsx'
         s3_client.upload_file(processed_excel_path,
@@ -542,7 +595,6 @@ class ThirdDerivativeGraphView(APIView):
 
         response_data = {'graph_url': cloudinary_url}
         return JsonResponse(response_data)
-
 # 三次微分のエクセルデータダウンロード
 
 
@@ -601,12 +653,15 @@ class FourthDerivativeGraphView(APIView):
         df = pd.read_excel(local_path)
         columns = df.columns.drop('波長')
 
-        # Create a copy of the dataframe to store the second derivative data
+        # Create a copy of the dataframe to store the fourth derivative data
         derivative_df = df.copy()
 
         plt.figure(figsize=(10, 6))
         plt.xlim(8000, 6000)
-        plt.ylim(-0.00015, 0.00017)
+
+        # Initialize variables to find max and min values dynamically
+        max_val, min_val = None, None
+
         colors = plt.cm.rainbow(np.linspace(0, 1, len(columns)))
 
         for col, c in zip(columns, colors):
@@ -615,10 +670,22 @@ class FourthDerivativeGraphView(APIView):
 
             smoothed_data = ndimage.gaussian_filter1d(df[col], sigma=10)
             y = ndimage.gaussian_filter1d(smoothed_data, sigma=10, order=4)
-            # Store the second derivative data in the copied dataframe
             derivative_df[col] = y
 
+            # Dynamically find max and min values in the specified range
+            current_max = y[(df['波長'] >= 6000) & (df['波長'] <= 8000)].max()
+            current_min = y[(df['波長'] >= 6000) & (df['波長'] <= 8000)].min()
+
+            # Update max and min values if new extremes found
+            max_val = current_max if max_val is None else max(
+                max_val, current_max)
+            min_val = current_min if min_val is None else min(
+                min_val, current_min)
+
             plt.plot(df['波長'], y, label=col, color=c)
+
+        # Set y limit based on dynamically found max and min values
+        plt.ylim(min_val, max_val)
 
         plt.title('Fourth Derivative of NIR Spectrum')
         plt.xlabel('Wavelength (cm-1)')
@@ -633,38 +700,37 @@ class FourthDerivativeGraphView(APIView):
             os.makedirs(graph_dir)
 
         plt.savefig(graph_filepath)
+        plt.close()
 
-        # Save the second derivative data to S3
+        # Save the fourth derivative data to S3
         processed_excel_path = os.path.join(
             graph_dir, 'fourth_derivative_data.xlsx')
-        # Use the derivative_df here
         derivative_df.to_excel(processed_excel_path, index=False)
-        s3_upload_path = f'fourth_derivative/third_derivative_data.xlsx'
+        s3_upload_path = f'fourth_derivative/fourth_derivative_data.xlsx'
         s3_client.upload_file(processed_excel_path,
                               bucket_name, s3_upload_path)
 
-        # Cloudinaryの設定
+        # Cloudinary configuration
         cloudinary.config(
             cloud_name=os.environ.get('CLOUDINARY_CLOUD_NAME'),
             api_key=os.environ.get('CLOUDINARY_API_KEY'),
             api_secret=os.environ.get('CLOUDINARY_API_SECRET')
         )
 
-        # Cloudinaryに保存されている古いイメージを削除
+        # Delete old images stored in Cloudinary
         folder_name = 'FourthDerivative'
         stored_images = cloudinary.api.resources(
             type='upload', prefix=f"{folder_name}/", max_results=500)
         for image in stored_images['resources']:
             cloudinary.uploader.destroy(image['public_id'])
 
-        # グラフをCloudinaryのフォルダにアップロード
+        # Upload the graph to Cloudinary folder
         upload_response = cloudinary.uploader.upload(
             graph_filepath, folder=folder_name, use_filename=True, unique_filename=False)
         cloudinary_url = upload_response['url']
 
         response_data = {'graph_url': cloudinary_url}
         return JsonResponse(response_data)
-
 # 四次微分のエクセルデータダウンロード
 
 
@@ -760,10 +826,28 @@ class DifferenceGraphView(APIView):
 
         plt.figure(figsize=(10, 6))
         plt.xlim(8000, 6000)
-        plt.ylim(-0.15, 0.1)
+
+        # Initialize variables to find max and min values dynamically
+        max_val, min_val = None, None
+
         colors = cm.rainbow(np.linspace(0, 0.5, len(columns)))
         for column, color in zip(columns, colors):
+            # Dynamically find max and min values in the specified range
+            current_max = df[column][(df['波長'] >= 6000)
+                                     & (df['波長'] <= 8000)].max()
+            current_min = df[column][(df['波長'] >= 6000)
+                                     & (df['波長'] <= 8000)].min()
+
+            # Update max and min values if new extremes found
+            max_val = current_max if max_val is None else max(
+                max_val, current_max)
+            min_val = current_min if min_val is None else min(
+                min_val, current_min)
+
             plt.plot(df['波長'], df[column], label=column, color=color)
+
+        # Set y limit based on dynamically found max and min values
+        plt.ylim(min_val, max_val)
 
         plt.title('Difference Spectrum with Baseline Correction')
         plt.xlabel('Wavelength (cm-1)')
@@ -786,7 +870,6 @@ class DifferenceGraphView(APIView):
 
         image_url = cloudinary_upload['secure_url']
         return JsonResponse({"graph_url": image_url})
-
 # 差スペクトルのデータをダウンロード
 
 
@@ -971,7 +1054,7 @@ def FUVUpload_file(request):
             with open(file_name, 'wb') as f:
                 workbook.save(f)
 
-            s3_path = f"Fuv/upload/{file_name}"
+            s3_path = f"fuv/upload/{file_name}"
 
             s3_client = boto3.client('s3', aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
                                      aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
@@ -994,3 +1077,123 @@ def FUVUpload_file(request):
             return JsonResponse({'message': 'Failed to decode JSON data.'}, status=400)
 
     return JsonResponse({'message': 'Only POST requests are allowed.'})
+
+
+@csrf_exempt
+def smooth_data(data, window_length=5, polyorder=2):
+    """
+    Smooth the data using Savitzky-Golay filter.
+
+    Parameters:
+    - data: The data to be smoothed
+    - window_length: The length of the filter window (must be an odd integer)
+    - polyorder: The order of the polynomial used to fit the samples
+
+    Returns:
+    - smoothed_data: The smoothed data
+    """
+    return savgol_filter(data, window_length, polyorder)
+
+
+@csrf_exempt
+def kk_transform(absorption, wavelength, n_inf, incident_angle, np_value):
+    """
+    Perform the KK transformation.
+
+    Parameters:
+    - absorption: The absorption spectrum
+    - wavelength: The wavelength values corresponding to the absorption spectrum
+    - n_inf: Refractive index at infinite wavelength (or the refractive index of the sample)
+    - incident_angle: Incident angle in degrees
+
+    Returns:
+    - phase: The phase spectrum obtained from the KK transformation
+    """
+
+    # Compute k (absorption coefficient) from absorption
+    k = absorption / (4 * np.pi * wavelength)
+
+    # Conversion of the wavelength from nm to cm
+    wavenumber = 1e7 / wavelength
+
+    # Convert incident_angle from degrees to radians
+    theta = np.radians(incident_angle)
+
+    # (5)式に基づいて位相スペクトルを計算します
+    integral_phi = np.array([
+        simps((np.log(np.sqrt(np.maximum(absorption, 1e-10))) /
+              np.maximum(wavenumber[i] - wavenumber, 1e-10)), wavenumber)
+        for i in range(len(wavenumber))
+    ])
+    inside_sqrt = np_value * np_value * \
+        np.sin(theta)**2 - np.maximum(n_inf**2, 1e-10)
+    phi = 2 * np.arctan(
+        np.sqrt(np.maximum(inside_sqrt, 0)) /
+        np.maximum(np_value * np_value * np.cos(theta), 1e-10)
+    ) + (2 * wavenumber / np.pi) * integral_phi
+
+    # Safe computation for r
+    numerator = np.sqrt(np.maximum(absorption, 1e-10))
+    denominator = np.maximum(1 + np.exp(1j * phi), 1e-10)
+    r = numerator / denominator
+
+    # (8) and (9)式に基づいて屈折率の実部nと虚部κを計算します
+    inside_sqrt_2 = np.sin(theta)**2 + np.maximum(1 - r, 1e-10) / \
+        np.maximum(1 + r, 1e-10)**2 * np.cos(theta)**2
+    sqrt_value = np.sqrt(np.maximum(inside_sqrt_2, 0))
+    n = np_value * np.real(sqrt_value)
+    kappa = -np_value * np.imag(sqrt_value)
+
+    # (10)式に基づいて吸収係数を計算します
+    alpha = (4 * np.pi * kappa) / wavelength
+
+    return phi, r, n, kappa, alpha
+
+
+@csrf_exempt
+def kk_transformed_spectrum(request):
+    # S3クライアントの初期化
+    s3_client = boto3.client('s3', aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+                             aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
+    bucket_name = settings.AWS_STORAGE_BUCKET_NAME
+
+    # 最新のファイルをS3バケットから取得
+    files = list_files(s3_client, bucket_name, 'fuv/upload')
+    if not files:
+        return HttpResponse('No files found in S3 bucket.')
+
+    latest_uploaded_file = sorted(files)[-1]
+
+    # Excelファイルをデータフレームとして読み込む
+    obj = s3_client.get_object(Bucket=bucket_name, Key=latest_uploaded_file)
+    df = pd.read_excel(BytesIO(obj['Body'].read()))
+
+    wavelength = df["波長"].values
+    data = json.loads(request.body.decode("utf-8"))
+
+    # Reactからのデータを抽出
+    n_inf = float(data['n_inf'])
+    incident_angle = float(data['incident_angle'])
+    np_value = float(data['np'])
+
+    concentration_columns = [col for col in df.columns if col.endswith("M")]
+    for conc in concentration_columns:
+        absorbance = df[conc].values
+        smoothed_absorbance = smooth_data(absorbance)  # Apply smoothing
+
+        phi, _, _, _, _ = kk_transform(
+            smoothed_absorbance, wavelength, n_inf, incident_angle, np_value)
+
+        if len(phi) != len(df):
+            return HttpResponse('Length mismatch between phase data and DataFrame.')
+
+        df[f"{conc}_phase"] = phi
+
+    # 変換されたデータをS3に保存
+    excel_io = io.BytesIO()
+    df.to_excel(excel_io, index=False)
+    excel_io.seek(0)
+    s3_client.upload_fileobj(excel_io, bucket_name,
+                             'fuv/kk/kk_transformed.xlsx')
+
+    return HttpResponse('KK transformed data uploaded to S3 successfully.')
