@@ -5,13 +5,13 @@ import openpyxl
 import boto3
 import tempfile
 from django.views.decorators.csrf import csrf_exempt
-from django.http import JsonResponse, HttpResponse
+from django.http import JsonResponse, HttpResponse, StreamingHttpResponse
 from django.conf import settings
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
-
+from rest_framework.decorators import api_view
 import io
 from io import BytesIO
 import pandas as pd
@@ -26,21 +26,30 @@ from sklearn.decomposition import PCA
 import prince
 from scipy.integrate import simps
 from scipy.signal import savgol_filter
+import zipstream
+import zipfile
+from scipy.signal import find_peaks
 
 
+# ===============================================================================================================================
 # Cloudinary設定
 cloudinary.config(
     cloud_name=os.environ.get('CLOUDINARY_CLOUD_NAME'),
     api_key=os.environ.get('CLOUDINARY_API_KEY'),
     api_secret=os.environ.get('CLOUDINARY_API_SECRET')
 )
+# ===============================================================================================================================
 
+
+# ===============================================================================================================================
 # AWS S3設定
 s3_client = boto3.client('s3',
                          aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
                          aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
 bucket_name = settings.AWS_STORAGE_BUCKET_NAME
+# ===============================================================================================================================
 
+# ===============================================================================================================================
 # バケット内のフォルダを指定して取得することができる
 
 
@@ -49,18 +58,44 @@ def list_files(s3_client, bucket, prefix):
     if 'Contents' in response:
         return [content['Key'] for content in response['Contents']]
     return []
+# ===============================================================================================================================
 
+
+# ===============================================================================================================================
 # バケット内の特定のフォルダ内にあるデータを消去する
-
-
 def delete_files_in_folder(s3_client, bucket, folder):
     """Delete all files in a specific S3 folder."""
     files = list_files(s3_client, bucket, folder)
     for file_key in files:
         s3_client.delete_object(Bucket=bucket, Key=file_key)
+# ===============================================================================================================================
 
 
+# ===============================================================================================================================
+
+
+def upload_to_s3(file_path, s3_path):
+    """
+    S3にファイルをアップロードする関数
+    :param file_path: アップロードするファイルのローカルパス
+    :param s3_path: S3の保存先パス
+    :return: None
+    """
+    s3_client = boto3.client('s3', aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+                             aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
+
+    bucket_name = settings.AWS_STORAGE_BUCKET_NAME
+
+    with open(file_path, 'rb') as f:
+        s3_client.upload_fileobj(f, bucket_name, s3_path)
+
+    return
+# ===============================================================================================================================
+
+# ===============================================================================================================================
 # ファイルアップロード関数
+
+
 @csrf_exempt
 def upload_file(request):
     if request.method == 'POST':
@@ -111,7 +146,10 @@ def upload_file(request):
             return JsonResponse({'message': 'Failed to decode JSON data.'}, status=400)
 
     return JsonResponse({'message': 'Only POST requests are allowed.'})
+# ===============================================================================================================================
 
+
+# ===============================================================================================================================
 # NIRスペクトル関数
 
 
@@ -185,7 +223,10 @@ def generate_spectrum_graph(request):
     graph_url = upload_response['url']
 
     return HttpResponse(graph_url)
+# ===============================================================================================================================
 
+
+# ===============================================================================================================================
 # モル吸光係数
 # モル濃度の情報を取得
 
@@ -260,7 +301,6 @@ def list_files(s3_client, bucket_name, prefix):
     # バケットから特定のプレフィックスを持つオブジェクトのリストを取得
     response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
     return [content['Key'] for content in response.get('Contents', [])]
-
 # モル吸光係数
 
 
@@ -294,6 +334,10 @@ class ConcentrationGraphView(APIView):
             error_message = f'Mismatch between number of data columns ({len(columns)}) and provided concentrations ({len(concentrations)}). Columns: {columns.tolist()}, Concentrations: {concentrations}'
             return Response({'error': error_message}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Create a new dataframe for normalized data
+        normalized_df = pd.DataFrame()
+        normalized_df['波長'] = df['波長']
+
         plt.figure(figsize=(10, 6))
         plt.xlim(8000, 6000)
 
@@ -304,6 +348,9 @@ class ConcentrationGraphView(APIView):
         for i, (column, color) in enumerate(zip(columns, colors)):
             # Process/normalize the column data here
             norm_column = df[column] / float(concentrations[i])
+
+            # Store normalized data in the new dataframe
+            normalized_df[column] = norm_column
 
             # Update max_val if new max found
             current_max = norm_column[(df['波長'] >= 6000) & (
@@ -333,12 +380,13 @@ class ConcentrationGraphView(APIView):
         # Delete previous data in the processed_data folder
         delete_files_in_folder(s3_client, bucket_name, 'processed_data/')
 
-        # Processed Excel data to a new S3 folder
-        processed_excel_path = os.path.join(graph_dir, 'processed_data.xlsx')
-        df.to_excel(processed_excel_path, index=False)
-        s3_upload_path = f'processed_data/processed_data.xlsx'
+        # Save the normalized data to a new S3 folder
+        processed_excel_path = os.path.join(
+            graph_dir, 'processed_data_normalized.xlsx')
+        normalized_df.to_excel(processed_excel_path, index=False)
+        s3_upload_normalized_path = f'processed_data/processed_data_normalized.xlsx'
         s3_client.upload_file(processed_excel_path,
-                              bucket_name, s3_upload_path)
+                              bucket_name, s3_upload_normalized_path)
 
         # Cloudinaryの設定
         cloudinary.config(
@@ -361,8 +409,10 @@ class ConcentrationGraphView(APIView):
 
         response_data = {'graph_url': cloudinary_url}
         return JsonResponse(response_data)
+# ===============================================================================================================================
 
 
+# ===============================================================================================================================
 # 二次微分
 class SecondDerivativeGraphView(APIView):
 
@@ -496,10 +546,11 @@ def second_derivative_download(request):
     except Exception as e:
         print(e)
         return HttpResponse("An error occurred while downloading the file.")
+# ===============================================================================================================================
 
+
+# ===============================================================================================================================
 # 三次微分
-
-
 class ThirdDerivativeGraphView(APIView):
 
     def post(self, request):
@@ -632,10 +683,12 @@ def third_derivative_download(request):
     except Exception as e:
         print(e)
         return HttpResponse("An error occurred while downloading the file.")
+# ===============================================================================================================================
+
+
+# ===============================================================================================================================
 
 # 四次微分
-
-
 class FourthDerivativeGraphView(APIView):
 
     def post(self, request):
@@ -768,10 +821,11 @@ def fourth_derivative_download(request):
     except Exception as e:
         print(e)
         return HttpResponse("An error occurred while downloading the file.")
+# ===============================================================================================================================
 
+
+# ===============================================================================================================================
 # 差スペクトル
-
-
 class DifferenceGraphView(APIView):
     parser_classes = [MultiPartParser]
 
@@ -907,9 +961,12 @@ def difference_download(request):
     except Exception as e:
         print(e)
         return HttpResponse("An error occurred while downloading the file.")
+# ===============================================================================================================================
 
 # PCA実行
 
+
+# ===============================================================================================================================
 
 class PrincipalComponentAnalysisView(APIView):
 
@@ -966,10 +1023,12 @@ class PrincipalComponentAnalysisView(APIView):
         )
 
         return Response({"graph_url": upload_response['url']}, status=200)
-
+# ===============================================================================================================================
 
 # MCA実行
 
+
+# ===============================================================================================================================
 
 class MCAnalysis(APIView):
     def post(self, request):
@@ -1022,11 +1081,13 @@ class MCAnalysis(APIView):
 
         # 最後にフロントにurlを返す
         return Response({"graph_url": upload_response['url']}, status=200)
+# ===============================================================================================================================
 
 
 # FUVのエクセルファイルアップロード
 
 
+# ===============================================================================================================================
 @csrf_exempt
 def FUVUpload_file(request):
     if request.method == 'POST':
@@ -1080,6 +1141,99 @@ def FUVUpload_file(request):
 
 
 @csrf_exempt
+def FUVSecondDerivativeUpload(request):
+    if request.method == 'POST':
+        try:
+            file_obj = request.FILES.get('file')
+
+            if not file_obj:
+                return JsonResponse({'message': 'File is required.'}, status=400)
+
+            file_name = f"{uuid.uuid4()}.xlsx"
+            with open(file_name, 'wb') as f:
+                for chunk in file_obj.chunks():
+                    f.write(chunk)
+
+            s3_path = f"fuv/second_analysis/{file_name}"
+
+            s3_client = boto3.client('s3',
+                                     aws_access_key_id=os.environ.get(
+                                         'AWS_ACCESS_KEY_ID'),
+                                     aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
+
+            existing_files = list_files(
+                s3_client, settings.AWS_STORAGE_BUCKET_NAME, 'fuv/second_analysis/')
+            for file_key in existing_files:
+                s3_client.delete_object(
+                    Bucket=settings.AWS_STORAGE_BUCKET_NAME, Key=file_key)
+
+            s3_client.upload_file(
+                file_name, settings.AWS_STORAGE_BUCKET_NAME, s3_path)
+
+            os.remove(file_name)
+
+            file_url = f"https://{settings.AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com/{s3_path}"
+
+            return JsonResponse({'message': 'File uploaded and saved to S3 successfully!', 'file_url': file_url})
+        except Exception as e:
+            return JsonResponse({'message': str(e)}, status=400)
+
+    return JsonResponse({'message': 'Only POST requests are allowed.'})
+
+
+@csrf_exempt
+def FUVNireUpload_file(request):
+    if request.method == 'POST':
+        try:
+            print("Access Key:", os.environ.get('AWS_ACCESS_KEY_ID'))
+            print("Secret Key:", os.environ.get('AWS_SECRET_ACCESS_KEY'))
+
+            data = json.loads(request.body.decode('utf-8'))
+
+            file_name = f"{uuid.uuid4()}.xlsx"
+
+            workbook = openpyxl.Workbook()
+            sheet = workbook.active
+            for index, row in enumerate(data):
+                for key, value in row.items():
+                    if index == 0:
+                        header_col = sheet.cell(
+                            row=1, column=list(row.keys()).index(key) + 1)
+                        header_col.value = key
+
+                    cell = sheet.cell(
+                        row=index + 2, column=list(row.keys()).index(key) + 1)
+                    cell.value = value
+
+            with open(file_name, 'wb') as f:
+                workbook.save(f)
+
+            s3_path = f"fuv/nire/{file_name}"
+
+            s3_client = boto3.client('s3', aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+                                     aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
+
+            existing_files = list_files(
+                s3_client, settings.AWS_STORAGE_BUCKET_NAME, 'fuv/nire/')
+            for file_key in existing_files:
+                s3_client.delete_object(
+                    Bucket=settings.AWS_STORAGE_BUCKET_NAME, Key=file_key)
+
+            s3_client.upload_file(
+                file_name, settings.AWS_STORAGE_BUCKET_NAME, s3_path)
+
+            os.remove(file_name)
+
+            file_url = f"https://{settings.AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com/{s3_path}"
+
+            return JsonResponse({'message': 'Data processed and saved to S3 successfully!', 'file_url': file_url})
+        except json.JSONDecodeError:
+            return JsonResponse({'message': 'Failed to decode JSON data.'}, status=400)
+
+    return JsonResponse({'message': 'Only POST requests are allowed.'})
+
+
+@csrf_exempt
 def smooth_data(data, window_length=5, polyorder=2):
     """
     Smooth the data using Savitzky-Golay filter.
@@ -1096,58 +1250,67 @@ def smooth_data(data, window_length=5, polyorder=2):
 
 
 @csrf_exempt
-def kk_transform(absorption, wavelength, n_inf, incident_angle, np_value):
-    """
-    Perform the KK transformation.
+def kk_transform(incident_angle, n_inf, df, nire_df):
+    # Constants
+    c = 299792458
+    incident = np.radians(incident_angle)
+    results = []
 
-    Parameters:
-    - absorption: The absorption spectrum
-    - wavelength: The wavelength values corresponding to the absorption spectrum
-    - n_inf: Refractive index at infinite wavelength (or the refractive index of the sample)
-    - incident_angle: Incident angle in degrees
+    # Compute frequency from wavelength
+    frequency = c * 10**9 / df['波長']
 
-    Returns:
-    - phase: The phase spectrum obtained from the KK transformation
-    """
+    for column in df.columns[1:]:
+        if column in nire_df.columns:
+            absorbance = df[column]
+            R = 10**(-absorbance)
 
-    # Compute k (absorption coefficient) from absorption
-    k = absorption / (4 * np.pi * wavelength)
+            # Retrieve refractive index data from appropriate column
+            nire = nire_df[column].dropna()
 
-    # Conversion of the wavelength from nm to cm
-    wavenumber = 1e7 / wavelength
+            actn = []
+            for ire in nire:
+                val = np.square(ire) * \
+                    np.square(np.sin(incident)) - np.square(n_inf)
+                if val >= 0:
+                    actn_val = np.arctan(
+                        np.sqrt(val) / (ire * np.cos(incident)))
+                else:
+                    actn_val = 0
+                actn.append(actn_val)
 
-    # Convert incident_angle from degrees to radians
-    theta = np.radians(incident_angle)
+            F = []
+            odd = frequency[1::2]
+            even = frequency[::2]
+            Rodd = R[1::2]
+            Reven = R[::2]
 
-    # (5)式に基づいて位相スペクトルを計算します
-    integral_phi = np.array([
-        simps((np.log(np.sqrt(np.maximum(absorption, 1e-10))) /
-              np.maximum(wavenumber[i] - wavenumber, 1e-10)), wavenumber)
-        for i in range(len(wavenumber))
-    ])
-    inside_sqrt = np_value * np_value * \
-        np.sin(theta)**2 - np.maximum(n_inf**2, 1e-10)
-    phi = 2 * np.arctan(
-        np.sqrt(np.maximum(inside_sqrt, 0)) /
-        np.maximum(np_value * np_value * np.cos(theta), 1e-10)
-    ) + (2 * wavenumber / np.pi) * integral_phi
+            for l in range(len(frequency) - 1):
+                if l % 2 == 1:
+                    sgm_lodd = [np.log(
+                        np.sqrt(n))/(np.square(m)-np.square(frequency[l])) for m, n in zip(even, Reven)]
+                    sum_l = np.sum(sgm_lodd)
+                    F_val = 2 * actn[l] + 2 * frequency[l] / np.pi * \
+                        2 * (frequency[l + 1] - frequency[l]) * sum_l
+                    F.append(F_val)
+                else:
+                    sgm_leven = [np.log(
+                        np.sqrt(n))/(np.square(m)-np.square(frequency[l])) for m, n in zip(odd, Rodd)]
+                    sum_l = np.sum(sgm_leven)
+                    F_val = 2 * actn[l] + 2 * frequency[l] / np.pi * \
+                        2 * (frequency[l + 1] - frequency[l]) * sum_l
+                    F.append(F_val)
 
-    # Safe computation for r
-    numerator = np.sqrt(np.maximum(absorption, 1e-10))
-    denominator = np.maximum(1 + np.exp(1j * phi), 1e-10)
-    r = numerator / denominator
+            wl = df['波長'][:-1]
+            r = [np.sqrt(Lr) * np.exp(1j * Lf) for Lr, Lf in zip(R, F)]
+            nfin = [p * np.real(np.sqrt(np.square(np.sin(incident)) + np.square(
+                (1 - sr) / (1 + sr)) * np.square(np.cos(incident)))) for sr, p in zip(r, nire)]
+            kfin = [-p * np.imag(np.sqrt(np.square(np.sin(incident)) + np.square(
+                (1 - sr) / (1 + sr)) * np.square(np.cos(incident)))) for sr, p in zip(r, nire)]
 
-    # (8) and (9)式に基づいて屈折率の実部nと虚部κを計算します
-    inside_sqrt_2 = np.sin(theta)**2 + np.maximum(1 - r, 1e-10) / \
-        np.maximum(1 + r, 1e-10)**2 * np.cos(theta)**2
-    sqrt_value = np.sqrt(np.maximum(inside_sqrt_2, 0))
-    n = np_value * np.real(sqrt_value)
-    kappa = -np_value * np.imag(sqrt_value)
+            Tfin = np.column_stack((wl, F, nfin, kfin))
+            results.append(Tfin)
 
-    # (10)式に基づいて吸収係数を計算します
-    alpha = (4 * np.pi * kappa) / wavelength
-
-    return phi, r, n, kappa, alpha
+    return results
 
 
 @csrf_exempt
@@ -1157,43 +1320,489 @@ def kk_transformed_spectrum(request):
                              aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
     bucket_name = settings.AWS_STORAGE_BUCKET_NAME
 
-    # 最新のファイルをS3バケットから取得
-    files = list_files(s3_client, bucket_name, 'fuv/upload')
-    if not files:
-        return HttpResponse('No files found in S3 bucket.')
+    # fuv/uploadから吸光度データを取得
+    fuv_files = list_files(s3_client, bucket_name, 'fuv/upload')
+    if not fuv_files:
+        return HttpResponse('No fuv files found in S3 bucket.')
 
-    latest_uploaded_file = sorted(files)[-1]
+    # fuv/nire_uploadから屈折率データを取得
+    nire_files = list_files(s3_client, bucket_name, 'fuv/nire')
+    if not nire_files:
+        return HttpResponse('No nire files found in S3 bucket.')
 
-    # Excelファイルをデータフレームとして読み込む
-    obj = s3_client.get_object(Bucket=bucket_name, Key=latest_uploaded_file)
-    df = pd.read_excel(BytesIO(obj['Body'].read()))
-
-    wavelength = df["波長"].values
     data = json.loads(request.body.decode("utf-8"))
 
     # Reactからのデータを抽出
     n_inf = float(data['n_inf'])
     incident_angle = float(data['incident_angle'])
-    np_value = float(data['np'])
 
-    concentration_columns = [col for col in df.columns if col.endswith("M")]
-    for conc in concentration_columns:
-        absorbance = df[conc].values
-        smoothed_absorbance = smooth_data(absorbance)  # Apply smoothing
+    # 吸光度データをデータフレームとして読み込み
+    fuv_obj = s3_client.get_object(Bucket=bucket_name, Key=fuv_files[0])
+    df = pd.read_excel(BytesIO(fuv_obj['Body'].read()))
 
-        phi, _, _, _, _ = kk_transform(
-            smoothed_absorbance, wavelength, n_inf, incident_angle, np_value)
+    # 屈折率データをデータフレームとして読み込み
+    nire_obj = s3_client.get_object(Bucket=bucket_name, Key=nire_files[0])
+    nire_df = pd.read_excel(BytesIO(nire_obj['Body'].read()))
 
-        if len(phi) != len(df):
-            return HttpResponse('Length mismatch between phase data and DataFrame.')
+    results = {
+        'F': pd.DataFrame(),
+        'nfin': pd.DataFrame(),
+        'kfin': pd.DataFrame()
+    }
 
-        df[f"{conc}_phase"] = phi
+    for column in df.columns[1:]:
+        if column in nire_df.columns:
+            transform_result = kk_transform(incident_angle, n_inf,
+                                            df[['波長', column]], nire_df[['波長', column]])
+            wl, F, nfin, kfin = transform_result[0].T
+            results['F'][column] = F
+            results['nfin'][column] = nfin
+            results['kfin'][column] = kfin
 
-    # 変換されたデータをS3に保存
-    excel_io = io.BytesIO()
-    df.to_excel(excel_io, index=False)
-    excel_io.seek(0)
-    s3_client.upload_fileobj(excel_io, bucket_name,
-                             'fuv/kk/kk_transformed.xlsx')
+    # 結果をS3に保存
+    for key, dataframe in results.items():
+        excel_io = io.BytesIO()
+        dataframe.insert(0, "Wavelength", df['波長'])
+        dataframe.to_excel(excel_io, index=False)
+        excel_io.seek(0)
+        s3_client.upload_fileobj(
+            excel_io, bucket_name, f'fuv/kk/transformed_{key}.xlsx')
 
     return HttpResponse('KK transformed data uploaded to S3 successfully.')
+
+
+def list_files(client, bucket, prefix):
+    try:
+        response = client.list_objects_v2(Bucket=bucket, Prefix=prefix)
+        return [item['Key'] for item in response.get('Contents', [])]
+    except Exception as e:
+        print(
+            f"Error listing files in bucket {bucket} with prefix {prefix}: {e}")
+        return []
+
+
+def kk_download_latest_from_s3(prefixes):
+    s3_client = boto3.client('s3',
+                             aws_access_key_id=os.environ.get(
+                                 'AWS_ACCESS_KEY_ID'),
+                             aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
+    bucket_name = 'newniv-bucket'
+
+    # Create an in-memory output file for the new zip.
+    zip_buffer = BytesIO()
+
+    # Open the zip file for writing, and write the S3 files into it.
+    with zipfile.ZipFile(zip_buffer, 'a', zipfile.ZIP_DEFLATED, False) as z:
+        for prefix in prefixes:
+            files = list_files(s3_client, bucket_name, prefix)
+            if not files:
+                continue  # No files found for this prefix
+            latest_file_key = files[-1]
+            file_stream = s3_client.get_object(
+                Bucket=bucket_name, Key=latest_file_key)['Body']
+            z.writestr(latest_file_key.split("/")[-1], file_stream.read())
+
+    # Zip files are written, now we position the stream to the beginning.
+    zip_buffer.seek(0)
+
+    # Create the Django response object and set the appropriate headers.
+    response = HttpResponse(zip_buffer, content_type='application/zip')
+    response['Content-Disposition'] = 'attachment; filename="downloaded_files.zip"'
+
+    return response
+
+
+def kk_download_all(request):
+    print("kk_download_all function called.")
+    prefixes = ['fuv/kk/transformed_F.xlsx',
+                'fuv/kk/transformed_kfin.xlsx', 'fuv/kk/transformed_nfin.xlsx']
+    return kk_download_latest_from_s3(prefixes)
+
+
+@csrf_exempt
+def fuv_second_derivative(request):
+    if request.method == 'POST':
+        s3_client = boto3.client('s3')
+        bucket_name = 'newniv-bucket'
+
+        files = list_files(s3_client, bucket_name, 'fuv/second_analysis/')
+        if not files:
+            return JsonResponse({'error': 'No files found in S3 bucket.'}, status=400)
+
+        latest_file_key = files[-1]
+        local_path = "/tmp/latest_file.xlsx"
+        s3_client.download_file(bucket_name, latest_file_key, local_path)
+
+        df = pd.read_excel(local_path)
+
+        # Create a copy of the dataframe to store the second derivative data
+        derivative_df = df.copy()
+
+        plt.figure(figsize=(10, 6))
+        colors = plt.cm.rainbow(np.linspace(0, 1, len(df.columns) - 1))
+
+        for col, color in zip(df.columns.drop('波長'), colors):
+            smoothed_data = ndimage.gaussian_filter1d(df[col], sigma=10)
+            y = ndimage.gaussian_filter1d(smoothed_data, sigma=10, order=2)
+            derivative_df[col] = y
+
+            plt.plot(df['波長'], y, label=col, color=color)
+
+        plt.title('Second Derivative of NIR Spectrum')
+        plt.xlabel('Wavelength (cm-1)')
+        plt.ylabel('Second Derivative of Absorbance')
+        plt.legend(loc='upper right')
+
+        graph_filename = 'second_derivative_nir_spectrum.png'
+        graph_dir = 'static'
+        graph_filepath = os.path.join(graph_dir, graph_filename)
+
+        if not os.path.exists(graph_dir):
+            os.makedirs(graph_dir)
+
+        plt.savefig(graph_filepath)
+        plt.close()
+
+        # Save the second derivative data to S3
+        processed_excel_path = os.path.join(
+            graph_dir, 'second_derivative_data.xlsx')
+        derivative_df.to_excel(processed_excel_path, index=False)
+        s3_upload_path = f'fuv/second_derivative/second_derivative_data.xlsx'
+        s3_client.upload_file(processed_excel_path,
+                              bucket_name, s3_upload_path)
+
+        # Cloudinaryの設定
+        cloudinary.config(
+            cloud_name=os.environ.get('CLOUDINARY_CLOUD_NAME'),
+            api_key=os.environ.get('CLOUDINARY_API_KEY'),
+            api_secret=os.environ.get('CLOUDINARY_API_SECRET')
+        )
+
+        # Cloudinaryに保存されている古いイメージを削除
+        folder_name = 'FuvSecondDerivative'
+        stored_images = cloudinary.api.resources(
+            type='upload', prefix=f"{folder_name}/", max_results=500)
+        for image in stored_images['resources']:
+            cloudinary.uploader.destroy(image['public_id'])
+
+        # グラフをCloudinaryのフォルダにアップロード
+        upload_response = cloudinary.uploader.upload(
+            graph_filepath, folder=folder_name, use_filename=True, unique_filename=False)
+        cloudinary_url = upload_response['url']
+
+        response_data = {'graph_url': cloudinary_url}
+        return JsonResponse(response_data)
+
+    return JsonResponse({'error': 'Invalid request method'}, status=400)
+
+
+@csrf_exempt
+def fuv_second_derivative_download(request):
+    if request.method == 'GET':
+        s3_client = boto3.client('s3',
+                                 aws_access_key_id=os.environ.get(
+                                     'AWS_ACCESS_KEY_ID'),
+                                 aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
+        bucket_name = 'newniv-bucket'
+        s3_path = 'fuv/second_derivative/second_derivative_data.xlsx'
+        local_path = '/tmp/second_derivative_data.xlsx'
+
+        try:
+            # S3からファイルをローカルにダウンロード
+            s3_client.download_file(bucket_name, s3_path, local_path)
+
+            # ローカルのファイルをレスポンスとして返す
+            with open(local_path, 'rb') as f:
+                response = HttpResponse(f.read(
+                ), content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                response['Content-Disposition'] = 'attachment; filename="second_derivative_data.xlsx"'
+                return response
+
+        except Exception as e:
+            return JsonResponse({'error': str(e)}, status=400)
+
+    return JsonResponse({'error': 'Invalid request method'}, status=400)
+
+
+@api_view(['POST'])
+def find_peak_upload_file(request):
+    if request.method == 'POST':
+        try:
+            # AWSのキー情報をプリント
+            print("Access Key:", os.environ.get('AWS_ACCESS_KEY_ID'))
+            print("Secret Key:", os.environ.get('AWS_SECRET_ACCESS_KEY'))
+
+            # リクエストからファイルを取得
+            file_obj = request.FILES['file']
+            file_name = f"{uuid.uuid4()}{file_obj.name}"  # UUIDを付与してファイル名を生成
+            s3_path = f"other/find_peak/{file_name}"
+
+            # S3のクライアントを初期化
+            s3_client = boto3.client('s3', aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+                                     aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
+
+            # 同じディレクトリに既存のファイルを削除
+            existing_files = list_files(
+                s3_client, settings.AWS_STORAGE_BUCKET_NAME, 'other/find_peak/')
+            for file_key in existing_files:
+                s3_client.delete_object(
+                    Bucket=settings.AWS_STORAGE_BUCKET_NAME, Key=file_key)
+
+            # ファイルをS3にアップロード
+            s3_client.upload_fileobj(
+                file_obj, settings.AWS_STORAGE_BUCKET_NAME, s3_path)
+
+            file_url = f"https://{settings.AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com/{s3_path}"
+
+            return JsonResponse({'message': 'File uploaded to S3 successfully!', 'file_url': file_url})
+
+        except Exception as e:
+            return JsonResponse({'message': f'An error occurred: {e}'}, status=400)
+
+    return JsonResponse({'message': 'Only POST requests are allowed.'})
+# ===============================================================================================================================
+
+# S3の指定したディレクトリ内のファイルリストを取得する関数
+
+
+# ===============================================================================================================================
+
+def list_files(s3_client, bucket_name, prefix):
+    response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
+    return [content['Key'] for content in response.get('Contents', [])]
+
+
+def download_and_filter_data(x_start, x_end):
+    s3_client = boto3.client('s3', aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+                             aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
+    s3_path = "other/find_peak/"
+
+    # フォルダ内の全ファイルをリストアップ
+    objects = s3_client.list_objects_v2(
+        Bucket=settings.AWS_STORAGE_BUCKET_NAME, Prefix=s3_path)
+
+    # 最新のファイルを特定
+    latest_file = max(objects.get('Contents', []),
+                      key=lambda x: x['LastModified'])
+
+    # ファイルのS3上のキーを取得
+    file_key = latest_file['Key']
+
+    file_name = "downloaded_file.xlsx"
+
+    with open(file_name, 'wb') as f:
+        s3_client.download_fileobj(
+            settings.AWS_STORAGE_BUCKET_NAME, file_key, f)
+
+    df = pd.read_excel(file_name)
+    os.remove(file_name)
+
+    df_filtered = df[(df['波長'] >= x_start) & (df['波長'] <= x_end)]
+
+    return df_filtered
+
+
+def find_peak(request):
+    x_start = float(request.data.get('x_start'))
+    x_end = float(request.data.get('x_end'))
+
+    df_filtered = download_and_filter_data(x_start, x_end)
+
+    # "波長"カラムを除外して、濃度のカラムリストを取得
+    concentration_columns = [col for col in df_filtered.columns if col != "波長"]
+    peak_data_list = []
+
+    for col in concentration_columns:
+        max_intensity = df_filtered[col].max()
+        max_wavelength = df_filtered[df_filtered[col]
+                                     == max_intensity]['波長'].values[0]
+        peak_data = {
+            "concentration": col,
+            "x": max_wavelength,
+            "y": max_intensity
+        }
+        peak_data_list.append(peak_data)
+
+    return JsonResponse({"data": peak_data_list})
+
+
+@api_view(['POST'])
+def evaluate_peaks_within_range(request):
+    x_start = float(request.data.get('x_start'))
+    x_end = float(request.data.get('x_end'))
+
+    df_filtered = download_and_filter_data(x_start, x_end)
+
+    # "波長"カラムを除外して、濃度のカラムリストを取得
+    concentration_columns = [col for col in df_filtered.columns if col != "波長"]
+
+    peak_data_list = []
+
+    for col in concentration_columns:
+        max_intensity = df_filtered[col].max()
+        max_wavelength = df_filtered[df_filtered[col]
+                                     == max_intensity]['波長'].values[0]
+
+        peak_data = {
+            "concentration": col,
+            "x": max_wavelength,
+            "y": max_intensity
+        }
+        peak_data_list.append(peak_data)
+
+    # ピーク検出後のデータを新たなデータフレームとして保存
+    df_peaks = pd.DataFrame(peak_data_list)
+    temp_peak_excel_name = "detected_peak_data.xlsx"
+    df_peaks.to_excel(temp_peak_excel_name, index=False)
+
+    # Upload the Excel file with detected peaks to S3
+    s3_key_peak_excel = "other/find_peaked/" + temp_peak_excel_name
+    s3_client.upload_file(temp_peak_excel_name, bucket_name, s3_key_peak_excel)
+
+    os.remove(temp_peak_excel_name)
+
+    # Prepare the S3 URL for the uploaded Excel file with detected peaks
+    s3_url_peak_excel = f"https://{bucket_name}.s3.amazonaws.com/{s3_key_peak_excel}"
+
+    response_data = {
+        "excel_data_url": s3_url_peak_excel,
+        "peaks": peak_data_list
+    }
+    return JsonResponse(response_data)
+
+
+def download_peaks_data(request):
+    s3_client = boto3.client('s3',
+                             aws_access_key_id=os.environ.get(
+                                 'AWS_ACCESS_KEY_ID'),
+                             aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
+
+    # S3内の'second_derivative/'ディレクトリから最新のファイルを取得
+    bucket_name = 'newniv-bucket'
+    prefix = 'other/find_peaked/'
+    files = list_files(s3_client, bucket_name, prefix)
+
+    if not files:
+        return HttpResponse('No files found in S3 bucket under the specified prefix.')
+
+    try:
+        # 最新のファイルのキー
+        latest_file_key = files[-1]  # 最新のファイルを取得するために[-1]を使用
+
+        # メモリ上のバイナリストリームとしてファイルを取得
+        file_stream = s3_client.get_object(
+            Bucket=bucket_name, Key=latest_file_key)['Body']
+
+        # クライアントに送信するためのレスポンスを作成
+        response = HttpResponse(file_stream.read(),
+                                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        # 最新のファイル名をそのまま使用
+        response[
+            'Content-Disposition'] = f'attachment; filename="{latest_file_key.split("/")[-1]}"'
+
+        return response
+
+    except Exception as e:
+        print(e)
+        return HttpResponse("An error occurred while downloading the file.")
+# ===============================================================================================================================
+
+
+# ===============================================================================================================================
+
+def smooth_upload_file_to_s3(file):
+    s3_client = boto3.client('s3', aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+                             aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
+
+    s3_path = "other/smooth/" + file.name
+    s3_client.upload_fileobj(file, settings.AWS_STORAGE_BUCKET_NAME, s3_path)
+    return s3_path
+
+
+@api_view(['POST'])
+def upload_file_for_smoothing(request):
+    if 'file' not in request.FILES:
+        return JsonResponse({"error": "File not provided"}, status=400)
+
+    file = request.FILES['file']
+    s3_path = smooth_upload_file_to_s3(file)
+
+    return JsonResponse({"message": "File uploaded successfully", "s3_path": s3_path})
+
+
+class SmoothingData(APIView):
+
+    def post(self, request):
+        window_size = int(request.data.get('window_size', 5))  # デフォルト値は5
+        polynomial_order = int(request.data.get(
+            'polynomial_order', 3))  # デフォルト値は3
+
+        s3_client = boto3.client('s3', aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+                                 aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
+        bucket_name = settings.AWS_STORAGE_BUCKET_NAME
+
+        # S3 path prefix for smoothing data
+        s3_prefix = 'other/smooth/'
+        files = list_files(s3_client, bucket_name, s3_prefix)
+        if not files:
+            return JsonResponse({"error": "No files found in S3 bucket."}, status=400)
+
+        latest_file_key = files[-1]
+        local_path = "/tmp/latest_file_for_smoothing.xlsx"
+        s3_client.download_file(bucket_name, latest_file_key, local_path)
+
+        df = pd.read_excel(local_path)
+
+        # Apply Savitzky-Golay filter for smoothing
+        for column in df.columns:
+            if df[column].dtype == "float64":
+                df[column] = savgol_filter(
+                    df[column], window_size, polynomial_order)
+
+        # Save smoothed data to a new Excel file
+        output_file_name = "/tmp/smoothed_data.xlsx"
+        df.to_excel(output_file_name, index=False)
+
+        # Upload smoothed file to S3
+        smoothed_s3_path = "other/smoothed_files/" + \
+            os.path.basename(output_file_name)
+        s3_client.upload_file(output_file_name, bucket_name, smoothed_s3_path)
+
+        return JsonResponse({"message": "Data smoothed successfully", "smoothed_s3_path": smoothed_s3_path})
+
+
+def download_smoothed_data(request):
+    s3_client = boto3.client('s3',
+                             aws_access_key_id=os.environ.get(
+                                 'AWS_ACCESS_KEY_ID'),
+                             aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
+
+    # S3内の'second_derivative/'ディレクトリから最新のファイルを取得
+    bucket_name = 'newniv-bucket'
+    prefix = 'other/smoothed_files/'
+    files = list_files(s3_client, bucket_name, prefix)
+
+    if not files:
+        return HttpResponse('No files found in S3 bucket under the specified prefix.')
+
+    try:
+        # 最新のファイルのキー
+        latest_file_key = files[-1]  # 最新のファイルを取得するために[-1]を使用
+
+        # メモリ上のバイナリストリームとしてファイルを取得
+        file_stream = s3_client.get_object(
+            Bucket=bucket_name, Key=latest_file_key)['Body']
+
+        # クライアントに送信するためのレスポンスを作成
+        response = HttpResponse(file_stream.read(),
+                                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        # 最新のファイル名をそのまま使用
+        response[
+            'Content-Disposition'] = f'attachment; filename="{latest_file_key.split("/")[-1]}"'
+
+        return response
+
+    except Exception as e:
+        print(e)
+        return HttpResponse("An error occurred while downloading the file.")
+# ===============================================================================================================================

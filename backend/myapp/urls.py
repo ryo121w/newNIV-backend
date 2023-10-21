@@ -17,7 +17,7 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path
 from . import views
-from .views import ConcentrationGraphView, SecondDerivativeGraphView, ThirdDerivativeGraphView, FourthDerivativeGraphView, DifferenceGraphView, PrincipalComponentAnalysisView, MCAnalysis
+from .views import ConcentrationGraphView, SecondDerivativeGraphView, ThirdDerivativeGraphView, FourthDerivativeGraphView, DifferenceGraphView, PrincipalComponentAnalysisView, MCAnalysis, SmoothingData
 
 
 urlpatterns = [
@@ -92,4 +92,39 @@ urlpatterns = [
 
     path('api/kk_transformed_spectrum/', views.kk_transformed_spectrum,
          name='kk_transformed_spectrum'),
+
+    path('api/nire_upload/', views.FUVNireUpload_file, name='fuv_nire_upload'),
+    path('api/kk_download_url', views.kk_download_all, name='download_url'),
+
+
+    path('api/fuv_second_derivative/',
+         views.fuv_second_derivative, name='second_derivative'),
+
+    path('api/fuv_second_derivative_upload/', views.FUVSecondDerivativeUpload,
+         name='fuv_second_derivative_upload'),
+
+    path('api/fuv_second_derivative_download/',
+         views.fuv_second_derivative_download, name='fuv_second_derivative_download'),
+
+
+    path('api/find_peak_upload_file/',
+         views.find_peak_upload_file, name='upload-file-to-s3'),
+
+    path('api/find_peak/', views.evaluate_peaks_within_range, name='find_peak'),
+
+
+    path('api/download_peaks_data/', views.download_peaks_data,
+         name='download_peaks_data'),
+
+    path('api/upload_file_for_smoothing/',
+         views.upload_file_for_smoothing, name='upload_file_for_smoothing'),
+
+    path('api/smoothing_data/', SmoothingData.as_view(), name='smoothing_data'),
+
+
+
+    path('api/download_smoothed_data/', views.download_smoothed_data,
+         name='download_smoothed_data'),
+
+
 ]
