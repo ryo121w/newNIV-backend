@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 from decouple import Config, Csv
 from django.conf import settings
+import dj_database_url
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -80,15 +81,9 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "myapp.wsgi.application"
 
+
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql_psycopg2',
-        'NAME': 'ryo',  # データベース名（ユーザー名と同じ場合）
-        'USER': 'ryo',  # ユーザー名
-        'PASSWORD': 'Ryou1234',  # 作成したユーザーのパスワード
-        'HOST': 'localhost',  # データベースサーバーのアドレス
-        'PORT': '5432',  # デフォルトのポート番号
-    }
+    'default': dj_database_url.config(default=os.environ.get('DATABASE_URL', 'postgres://ryo:Ryou1234@localhost:5432/ryo'))
 }
 
 
