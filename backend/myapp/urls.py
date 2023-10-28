@@ -17,6 +17,8 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path
 from . import views
+from django.views.generic import TemplateView
+from django.urls import re_path
 from .views import ConcentrationGraphView, SecondDerivativeGraphView, ThirdDerivativeGraphView, FourthDerivativeGraphView, DifferenceGraphView, PrincipalComponentAnalysisView, MCAnalysis, SmoothingData
 
 
@@ -130,4 +132,7 @@ urlpatterns = [
     path('signup/', views.signup_view, name='signup'),
 
     path('superuser-login/', views.superuser_login, name='superuser_login'),
+
+
+    re_path(r'^.*$', TemplateView.as_view(template_name="index.html")),
 ]
