@@ -21,7 +21,7 @@ from .views import ConcentrationGraphView, SecondDerivativeGraphView, ThirdDeriv
 
 
 urlpatterns = [
-    path("admin/", admin.site.urls),
+    path("xzoDx2yX/", admin.site.urls),
     # Upload Excel File(NIV)
     path('api/upload_excel/', views.upload_file, name='upload_file'),
 
@@ -125,6 +125,9 @@ urlpatterns = [
 
     path('api/download_smoothed_data/', views.download_smoothed_data,
          name='download_smoothed_data'),
+    path('login/', views.login_view, name='login'),
 
+    path('signup/', views.signup_view, name='signup'),
 
+    path('superuser-login/', views.superuser_login, name='superuser_login'),
 ]

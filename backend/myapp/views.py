@@ -7,11 +7,17 @@ import tempfile
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse, HttpResponse, StreamingHttpResponse
 from django.conf import settings
+from django.contrib.auth import authenticate, login
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from django.contrib.auth.models import User
+from django.shortcuts import redirect
+from django.contrib import messages
+
 import io
 from io import BytesIO
 import pandas as pd
@@ -29,7 +35,86 @@ from scipy.signal import savgol_filter
 import zipstream
 import zipfile
 from scipy.signal import find_peaks
+from django.contrib.auth.decorators import login_required
+from django.shortcuts import render, redirect
 
+# ===============================================================================================================================
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def special_host_api(request):
+    if request.user.is_superuser or request.user.is_host_approved:
+        return Response({"view": "host"})
+    else:
+        return Response({"view": "wait"})
+
+
+@csrf_exempt
+def login_view(request):
+    if request.method == "POST":
+        data = json.loads(request.body)
+        username = data.get('username')
+        password = data.get('password')
+
+        user = authenticate(username=username, password=password)
+
+        if user is not None:
+            if user.is_staff:  # is_staffフィールドをチェック
+                # ログイン成功時の処理
+                return JsonResponse({"message": "Login successful."}, status=200)
+            else:
+                # is_staffフィールドがFalseの場合
+                return JsonResponse({"message": "You do not have staff access."}, status=403)
+        else:
+            return JsonResponse({"message": "Invalid username or password."}, status=401)
+    return JsonResponse({"message": "Method not allowed."}, status=405)
+
+
+@csrf_exempt
+def signup_view(request):
+    if request.method == "POST":
+        data = json.loads(request.body)
+        username = data.get('username')
+        password = data.get('password')
+
+        if User.objects.filter(username=username).exists():
+            return JsonResponse({"message": "Username already exists."}, status=400)
+
+        try:
+            user = User.objects.create_user(
+                username=username, password=password)
+            # ユーザー登録成功時の処理をこちらに記述
+            return JsonResponse({"message": "Signup successful."}, status=201)
+        except Exception as e:
+            return JsonResponse({"message": str(e)}, status=500)
+    return JsonResponse({"message": "Method not allowed."}, status=405)
+
+
+@csrf_exempt
+def superuser_login(request):
+    data = json.loads(request.body)
+    print("Received data:", data)  # ログを追加
+
+    username = data.get('username')
+    password = data.get('password')
+    user = authenticate(request, username=username, password=password)
+
+    if user:
+        print("User authenticated:", user.username)  # ユーザーが認証された場合のログ
+        if user.is_superuser:
+            print("User is superuser")  # ユーザーがスーパーユーザーの場合のログ
+            login(request, user)
+            return JsonResponse({"status": "success", "message": "Logged in as superuser."})
+        else:
+            print("User is not superuser")  # ユーザーがスーパーユーザーでない場合のログ
+            return JsonResponse({"status": "error", "message": "You do not have superuser access."}, status=403)
+    else:
+        print("Authentication failed")  # 認証が失敗した場合のログ
+        return JsonResponse({"status": "error", "message": "Authentication failed."}, status=401)
+
+
+# ===============================================================================================================================
 
 # ===============================================================================================================================
 # Cloudinary設定
