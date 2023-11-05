@@ -1799,7 +1799,17 @@ def smooth_upload_file_to_s3(file):
     s3_client = boto3.client('s3', aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
                              aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
 
-    s3_path = "other/smooth/" + file.name
+    folder_path = "other/smooth/"
+    s3_path = folder_path + file.name
+
+    # Delete all files in the folder
+    objects_to_delete = s3_client.list_objects_v2(
+        Bucket=settings.AWS_STORAGE_BUCKET_NAME, Prefix=folder_path)
+    if 'Contents' in objects_to_delete:
+        for obj in objects_to_delete['Contents']:
+            s3_client.delete_object(
+                Bucket=settings.AWS_STORAGE_BUCKET_NAME, Key=obj['Key'])
+
     s3_client.upload_fileobj(file, settings.AWS_STORAGE_BUCKET_NAME, s3_path)
     return s3_path
 
