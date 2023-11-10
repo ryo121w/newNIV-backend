@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: myapp
+    env: python
+    buildCommand: cd backend && pip install -r requirements.txt
+    startCommand: cd backend && gunicorn myapp.wsgi:application --log-file -
