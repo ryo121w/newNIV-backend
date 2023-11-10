@@ -90,7 +90,8 @@ urlpatterns = [
 
     # FileUpload(FUV)
     path('api/fuv_upload/', views.FUVUpload_file, name='fuv_upload'),
-
+    path('api/get_concentration_count/', views.get_concentration_count,
+         name='get_concentration_count'),
 
     path('api/kk_transformed_spectrum/', views.kk_transformed_spectrum,
          name='kk_transformed_spectrum'),

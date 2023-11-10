@@ -37,7 +37,10 @@ import zipfile
 from scipy.signal import find_peaks
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import render, redirect
+import logging
 
+
+logger = logging.getLogger(__name__)
 # ===============================================================================================================================
 
 
@@ -1226,6 +1229,44 @@ def FUVUpload_file(request):
 
 
 @csrf_exempt
+def get_concentration_count(request):
+    if request.method != 'GET':
+        return JsonResponse({'message': 'Only GET requests are allowed.'}, status=405)
+
+    try:
+        # S3クライアントの初期化
+        s3_client = boto3.client('s3',
+                                 aws_access_key_id=os.environ.get(
+                                     'AWS_ACCESS_KEY_ID'),
+                                 aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
+        bucket_name = os.environ.get(
+            'AWS_STORAGE_BUCKET_NAME')  # 環境変数からバケット名を取得
+
+        # S3バケット内のファイル一覧を取得
+        response = s3_client.list_objects_v2(
+            Bucket=bucket_name, Prefix='fuv/upload/')
+        files = [file['Key'] for file in response.get('Contents', [])]
+
+        if not files:
+            return JsonResponse({'message': 'No files found in S3 bucket.'}, status=404)
+
+        # 最新のファイルを取得
+        latest_file_key = max(files, key=lambda x: x.split('/')[-1])
+        latest_file_obj = s3_client.get_object(
+            Bucket=bucket_name, Key=latest_file_key)
+
+        # Excelファイルを読み込む
+        df = pd.read_excel(BytesIO(latest_file_obj['Body'].read()))
+        # '濃度'列でユニークな値の数を数える（列名はファイルによって変更する必要があるかもしれません）
+        concentration_count = df['濃度'].nunique()
+        return JsonResponse({'concentration_count': concentration_count})
+
+    except Exception as e:
+        logger.error(f'Error getting concentration count: {e}', exc_info=True)
+        return JsonResponse({'message': 'Server error while retrieving concentration count.'}, status=500)
+
+
+@csrf_exempt
 def FUVSecondDerivativeUpload(request):
     if request.method == 'POST':
         try:
@@ -1335,65 +1376,44 @@ def smooth_data(data, window_length=5, polyorder=2):
 
 
 @csrf_exempt
-def kk_transform(incident_angle, n_inf, df, nire_df):
+def kk_transform(incident_angle, n_inf, absorbance_df, fixed_nire_value):
     # Constants
-    c = 299792458
-    incident = np.radians(incident_angle)
-    results = []
+    c = 299792458  # Speed of light in m/s
+    incident_angle_rad = np.radians(incident_angle)  # Convert angle to radians
 
     # Compute frequency from wavelength
-    frequency = c * 10**9 / df['波長']
+    frequency = c * 10**9 / absorbance_df['波長']
+    results = []
 
-    for column in df.columns[1:]:
-        if column in nire_df.columns:
-            absorbance = df[column]
-            R = 10**(-absorbance)
+    # Loop over each concentration column (skipping the wavelength column)
+    for column in absorbance_df.columns[1:]:
+        absorbance = absorbance_df[column]
+        R = 10**(-absorbance)  # Reflectance
 
-            # Retrieve refractive index data from appropriate column
-            nire = nire_df[column].dropna()
+        # Initialize arrays for the calculated values
+        F = np.zeros(len(frequency))
+        nfin = np.zeros(len(frequency))
+        kfin = np.zeros(len(frequency))
 
-            actn = []
-            for ire in nire:
-                val = np.square(ire) * \
-                    np.square(np.sin(incident)) - np.square(n_inf)
-                if val >= 0:
-                    actn_val = np.arctan(
-                        np.sqrt(val) / (ire * np.cos(incident)))
-                else:
-                    actn_val = 0
-                actn.append(actn_val)
+        # Perform the transformation using the fixed nire values
+        for i in range(len(frequency)):
+            # Avoid division by zero or negative square roots
+            val = fixed_nire_value**2 * \
+                np.sin(incident_angle_rad)**2 - n_inf**2
+            actn_val = 0 if val < 0 else np.arctan(
+                np.sqrt(val) / (fixed_nire_value * np.cos(incident_angle_rad)))
+            F[i] = 2 * actn_val
 
-            F = []
-            odd = frequency[1::2]
-            even = frequency[::2]
-            Rodd = R[1::2]
-            Reven = R[::2]
+            # Calculate nfin and kfin for each frequency
+            r = np.sqrt(R[i]) * np.exp(1j * F[i])
+            nfin[i] = fixed_nire_value * np.real(np.sqrt(np.sin(incident_angle_rad)**2 + (
+                1 - r) / (1 + r) * np.cos(incident_angle_rad)**2))
+            kfin[i] = -fixed_nire_value * np.imag(np.sqrt(np.sin(incident_angle_rad)**2 + (
+                1 - r) / (1 + r) * np.cos(incident_angle_rad)**2))
 
-            for l in range(len(frequency) - 1):
-                if l % 2 == 1:
-                    sgm_lodd = [np.log(
-                        np.sqrt(n))/(np.square(m)-np.square(frequency[l])) for m, n in zip(even, Reven)]
-                    sum_l = np.sum(sgm_lodd)
-                    F_val = 2 * actn[l] + 2 * frequency[l] / np.pi * \
-                        2 * (frequency[l + 1] - frequency[l]) * sum_l
-                    F.append(F_val)
-                else:
-                    sgm_leven = [np.log(
-                        np.sqrt(n))/(np.square(m)-np.square(frequency[l])) for m, n in zip(odd, Rodd)]
-                    sum_l = np.sum(sgm_leven)
-                    F_val = 2 * actn[l] + 2 * frequency[l] / np.pi * \
-                        2 * (frequency[l + 1] - frequency[l]) * sum_l
-                    F.append(F_val)
-
-            wl = df['波長'][:-1]
-            r = [np.sqrt(Lr) * np.exp(1j * Lf) for Lr, Lf in zip(R, F)]
-            nfin = [p * np.real(np.sqrt(np.square(np.sin(incident)) + np.square(
-                (1 - sr) / (1 + sr)) * np.square(np.cos(incident)))) for sr, p in zip(r, nire)]
-            kfin = [-p * np.imag(np.sqrt(np.square(np.sin(incident)) + np.square(
-                (1 - sr) / (1 + sr)) * np.square(np.cos(incident)))) for sr, p in zip(r, nire)]
-
-            Tfin = np.column_stack((wl, F, nfin, kfin))
-            results.append(Tfin)
+        # Append the results to a list
+        result = np.column_stack((absorbance_df['波長'], F, nfin, kfin))
+        results.append(result)
 
     return results
 
@@ -1647,11 +1667,8 @@ def find_peak_upload_file(request):
     return JsonResponse({'message': 'Only POST requests are allowed.'})
 # ===============================================================================================================================
 
-# S3の指定したディレクトリ内のファイルリストを取得する関数
-
 
 # ===============================================================================================================================
-
 def list_files(s3_client, bucket_name, prefix):
     response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
     return [content['Key'] for content in response.get('Contents', [])]
@@ -1794,7 +1811,6 @@ def download_peaks_data(request):
 
 
 # ===============================================================================================================================
-
 def smooth_upload_file_to_s3(file):
     s3_client = boto3.client('s3', aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
                              aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
