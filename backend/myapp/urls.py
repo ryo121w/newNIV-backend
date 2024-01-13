@@ -90,7 +90,8 @@ urlpatterns = [
 
     # FileUpload(FUV)
     path('api/fuv_upload/', views.FUVUpload_file, name='fuv_upload'),
-    path('api/get_concentration_count/', views.get_concentration_count,
+
+    path('api/get_fuv_concentration_count/', views.get_fuv_concentration_count,
          name='get_concentration_count'),
 
     path('api/kk_transformed_spectrum/', views.kk_transformed_spectrum,
@@ -135,5 +136,8 @@ urlpatterns = [
     path('superuser-login/', views.superuser_login, name='superuser_login'),
 
 
-    re_path(r'^.*$', TemplateView.as_view(template_name="index.html")),
+    path('api/refractive_index_upload/',
+         views.sampleUpload, name='sample_upload'),
+
+
 ]

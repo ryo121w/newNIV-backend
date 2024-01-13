@@ -534,8 +534,8 @@ class SecondDerivativeGraphView(APIView):
             if col.startswith('Molar_Absorptivity_'):
                 continue
 
-            smoothed_data = ndimage.gaussian_filter1d(df[col], sigma=10)
-            y = ndimage.gaussian_filter1d(smoothed_data, sigma=10, order=2)
+            smoothed_data = ndimage.gaussian_filter1d(df[col], sigma=4)
+            y = ndimage.gaussian_filter1d(smoothed_data, sigma=4, order=2)
             derivative_df[col] = y
 
             # Dynamically find max and min values in the specified range
@@ -1229,20 +1229,75 @@ def FUVUpload_file(request):
 
 
 @csrf_exempt
-def get_concentration_count(request):
+def sampleUpload(request):
+    if request.method == 'POST':
+        try:
+            print("Access Key:", os.environ.get('AWS_ACCESS_KEY_ID'))
+            print("Secret Key:", os.environ.get('AWS_SECRET_ACCESS_KEY'))
+
+            data = json.loads(request.body.decode('utf-8'))
+
+            file_name = f"{uuid.uuid4()}.xlsx"
+
+            workbook = openpyxl.Workbook()
+            sheet = workbook.active
+            for index, row in enumerate(data):
+                for key, value in row.items():
+                    if index == 0:
+                        header_col = sheet.cell(
+                            row=1, column=list(row.keys()).index(key) + 1)
+                        header_col.value = key
+
+                    cell = sheet.cell(
+                        row=index + 2, column=list(row.keys()).index(key) + 1)
+                    cell.value = value
+
+            with open(file_name, 'wb') as f:
+                workbook.save(f)
+
+            s3_path = f"fuv/sample/{file_name}"
+
+            s3_client = boto3.client('s3', aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+                                     aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
+
+            existing_files = list_files(
+                s3_client, settings.AWS_STORAGE_BUCKET_NAME, 'fuv/sample/')
+            for file_key in existing_files:
+                s3_client.delete_object(
+                    Bucket=settings.AWS_STORAGE_BUCKET_NAME, Key=file_key)
+
+            s3_client.upload_file(
+                file_name, settings.AWS_STORAGE_BUCKET_NAME, s3_path)
+
+            os.remove(file_name)
+
+            file_url = f"https://{settings.AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com/{s3_path}"
+
+            return JsonResponse({'message': 'Data processed and saved to S3 successfully!', 'file_url': file_url})
+        except json.JSONDecodeError:
+            return JsonResponse({'message': 'Failed to decode JSON data.'}, status=400)
+
+    return JsonResponse({'message': 'Only POST requests are allowed.'})
+
+
+def dynamic_concentration_count(df):
+    concatenated_values = pd.concat(
+        [df[col] for col in df.columns if col != '波長'])  # '波長'以外のすべての列を対象
+    unique_concentration_count = concatenated_values.nunique()
+    return unique_concentration_count
+
+
+def get_fuv_concentration_count(request):
     if request.method != 'GET':
         return JsonResponse({'message': 'Only GET requests are allowed.'}, status=405)
 
     try:
-        # S3クライアントの初期化
         s3_client = boto3.client('s3',
                                  aws_access_key_id=os.environ.get(
                                      'AWS_ACCESS_KEY_ID'),
                                  aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
-        bucket_name = os.environ.get(
-            'AWS_STORAGE_BUCKET_NAME')  # 環境変数からバケット名を取得
+        bucket_name = os.environ.get('AWS_STORAGE_BUCKET_NAME')
 
-        # S3バケット内のファイル一覧を取得
         response = s3_client.list_objects_v2(
             Bucket=bucket_name, Prefix='fuv/upload/')
         files = [file['Key'] for file in response.get('Contents', [])]
@@ -1250,20 +1305,18 @@ def get_concentration_count(request):
         if not files:
             return JsonResponse({'message': 'No files found in S3 bucket.'}, status=404)
 
-        # 最新のファイルを取得
         latest_file_key = max(files, key=lambda x: x.split('/')[-1])
         latest_file_obj = s3_client.get_object(
             Bucket=bucket_name, Key=latest_file_key)
 
-        # Excelファイルを読み込む
         df = pd.read_excel(BytesIO(latest_file_obj['Body'].read()))
-        # '濃度'列でユニークな値の数を数える（列名はファイルによって変更する必要があるかもしれません）
-        concentration_count = df['濃度'].nunique()
-        return JsonResponse({'concentration_count': concentration_count})
+        # 濃度のラベルのリストを取得
+        concentration_labels = [col for col in df.columns if col != '波長']
+        return JsonResponse({'concentration_labels': concentration_labels})
 
     except Exception as e:
-        logger.error(f'Error getting concentration count: {e}', exc_info=True)
-        return JsonResponse({'message': 'Server error while retrieving concentration count.'}, status=500)
+        logger.error(f'Error getting concentration labels: {e}', exc_info=True)
+        return JsonResponse({'message': 'Server error while retrieving concentration labels.'}, status=500)
 
 
 @csrf_exempt
@@ -1375,47 +1428,56 @@ def smooth_data(data, window_length=5, polyorder=2):
     return savgol_filter(data, window_length, polyorder)
 
 
-@csrf_exempt
-def kk_transform(incident_angle, n_inf, absorbance_df, fixed_nire_value):
-    # Constants
+def kk_transform(incident_angle, absorbance_df, sample_nire_df, nire_df):
     c = 299792458  # Speed of light in m/s
-    incident_angle_rad = np.radians(incident_angle)  # Convert angle to radians
+    incident_angle_rad = np.radians(incident_angle)
 
-    # Compute frequency from wavelength
-    frequency = c * 10**9 / absorbance_df['波長']
-    results = []
-
-    # Loop over each concentration column (skipping the wavelength column)
+    # Initialize DataFrame
+    result_df = pd.DataFrame({'Wavelength': absorbance_df['波長']})
     for column in absorbance_df.columns[1:]:
+        n_inf = sample_nire_df[column].iloc[0]
         absorbance = absorbance_df[column]
-        R = 10**(-absorbance)  # Reflectance
+        R = 10 ** (-absorbance)
 
-        # Initialize arrays for the calculated values
-        F = np.zeros(len(frequency))
-        nfin = np.zeros(len(frequency))
-        kfin = np.zeros(len(frequency))
+        F = np.zeros(len(absorbance_df['波長']))
+        nfin = np.zeros(len(absorbance_df['波長']))
+        kfin = np.zeros(len(absorbance_df['波長']))
 
-        # Perform the transformation using the fixed nire values
-        for i in range(len(frequency)):
-            # Avoid division by zero or negative square roots
-            val = fixed_nire_value**2 * \
-                np.sin(incident_angle_rad)**2 - n_inf**2
-            actn_val = 0 if val < 0 else np.arctan(
-                np.sqrt(val) / (fixed_nire_value * np.cos(incident_angle_rad)))
+        for i, wavelength in enumerate(absorbance_df['波長']):
+            nire = nire_df.iloc[i]
+            val = nire**2 * np.sin(incident_angle_rad)**2 - n_inf**2
+
+            # np.where を使って条件を適用
+            actn_val = np.where(val >= 0, np.arctan(
+                np.sqrt(val) / (nire * np.cos(incident_angle_rad))), 0)
             F[i] = 2 * actn_val
 
-            # Calculate nfin and kfin for each frequency
             r = np.sqrt(R[i]) * np.exp(1j * F[i])
-            nfin[i] = fixed_nire_value * np.real(np.sqrt(np.sin(incident_angle_rad)**2 + (
-                1 - r) / (1 + r) * np.cos(incident_angle_rad)**2))
-            kfin[i] = -fixed_nire_value * np.imag(np.sqrt(np.sin(incident_angle_rad)**2 + (
-                1 - r) / (1 + r) * np.cos(incident_angle_rad)**2))
+            nfin[i] = nire * np.real(np.sqrt(np.sin(incident_angle_rad)
+                                     ** 2 + (1 - r) / (1 + r) * np.cos(incident_angle_rad)**2))
+            kfin[i] = -nire * np.imag(np.sqrt(np.sin(incident_angle_rad)
+                                      ** 2 + (1 - r) / (1 + r) * np.cos(incident_angle_rad)**2))
 
-        # Append the results to a list
-        result = np.column_stack((absorbance_df['波長'], F, nfin, kfin))
-        results.append(result)
+        # Add to DataFrame
+        result_df[f'F_{column}'] = F
+        result_df[f'nfin_{column}'] = nfin
+        result_df[f'kfin_{column}'] = kfin
 
-    return results
+    return result_df
+
+# S3バケット内の最新ファイルを取得する関数
+
+
+def get_latest_file_from_s3(s3_client, bucket_name, prefix):
+    response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
+    if 'Contents' in response:
+        latest_file = max(response['Contents'],
+                          key=lambda x: x['LastModified'])
+        return s3_client.get_object(Bucket=bucket_name, Key=latest_file['Key'])
+    else:
+        return None
+
+# KK変換のメイン処理を行う関数
 
 
 @csrf_exempt
@@ -1425,55 +1487,46 @@ def kk_transformed_spectrum(request):
                              aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'))
     bucket_name = settings.AWS_STORAGE_BUCKET_NAME
 
-    # fuv/uploadから吸光度データを取得
-    fuv_files = list_files(s3_client, bucket_name, 'fuv/upload')
-    if not fuv_files:
-        return HttpResponse('No fuv files found in S3 bucket.')
+    # 各データファイルの取得
+    fuv_response = get_latest_file_from_s3(
+        s3_client, bucket_name, 'fuv/upload/')
+    nire_response = get_latest_file_from_s3(
+        s3_client, bucket_name, 'fuv/nire/')
+    sample_response = get_latest_file_from_s3(
+        s3_client, bucket_name, 'fuv/sample/')
 
-    # fuv/nire_uploadから屈折率データを取得
-    nire_files = list_files(s3_client, bucket_name, 'fuv/nire')
-    if not nire_files:
-        return HttpResponse('No nire files found in S3 bucket.')
+    if not (fuv_response and nire_response and sample_response):
+        return HttpResponse('Failed to retrieve files from S3.', status=500)
 
+    # データフレームへの変換
+    absorbance_df = pd.read_excel(BytesIO(fuv_response['Body'].read()))
+    nire_df = pd.read_excel(BytesIO(nire_response['Body'].read()))
+    sample_nire_df = pd.read_excel(BytesIO(sample_response['Body'].read()))
+
+    # リクエストから入射角を取得
     data = json.loads(request.body.decode("utf-8"))
+    try:
+        incident_angle = float(data['incident_angle'])
+    except (ValueError, KeyError):
+        return HttpResponse("Invalid or missing 'incident_angle' value.", status=400)
 
-    # Reactからのデータを抽出
-    n_inf = float(data['n_inf'])
-    incident_angle = float(data['incident_angle'])
+    # KK変換の実行
+    transformed_results = kk_transform(
+        incident_angle, absorbance_df, sample_nire_df, nire_df)
 
-    # 吸光度データをデータフレームとして読み込み
-    fuv_obj = s3_client.get_object(Bucket=bucket_name, Key=fuv_files[0])
-    df = pd.read_excel(BytesIO(fuv_obj['Body'].read()))
-
-    # 屈折率データをデータフレームとして読み込み
-    nire_obj = s3_client.get_object(Bucket=bucket_name, Key=nire_files[0])
-    nire_df = pd.read_excel(BytesIO(nire_obj['Body'].read()))
-
-    results = {
-        'F': pd.DataFrame(),
-        'nfin': pd.DataFrame(),
-        'kfin': pd.DataFrame()
-    }
-
-    for column in df.columns[1:]:
-        if column in nire_df.columns:
-            transform_result = kk_transform(incident_angle, n_inf,
-                                            df[['波長', column]], nire_df[['波長', column]])
-            wl, F, nfin, kfin = transform_result[0].T
-            results['F'][column] = F
-            results['nfin'][column] = nfin
-            results['kfin'][column] = kfin
-
-    # 結果をS3に保存
-    for key, dataframe in results.items():
-        excel_io = io.BytesIO()
-        dataframe.insert(0, "Wavelength", df['波長'])
-        dataframe.to_excel(excel_io, index=False)
-        excel_io.seek(0)
-        s3_client.upload_fileobj(
-            excel_io, bucket_name, f'fuv/kk/transformed_{key}.xlsx')
+    # 結果のS3へのアップロード
+    excel_buffer = BytesIO()
+    transformed_results.to_excel(excel_buffer, index=False)
+    excel_buffer.seek(0)
+    s3_client.put_object(
+        Bucket=bucket_name, Key='kk/transformed_results.xlsx', Body=excel_buffer.read())
 
     return HttpResponse('KK transformed data uploaded to S3 successfully.')
+
+
+def list_files(client, bucket, prefix):
+    response = client.list_objects_v2(Bucket=bucket, Prefix=prefix)
+    return [item['Key'] for item in response.get('Contents', [])]
 
 
 def list_files(client, bucket, prefix):
